@@ -1627,6 +1627,19 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(existsSync(path.join(workspace.path, 'approved.txt'))).toBe(true);
   });
 
+  it('saves a Claude plan under a name taken from its heading', async () => {
+    const workspace = await createWorkspace();
+    const [session] = workspace.sessions;
+    await korev.api.send(session.id, {
+      ...task('make-lanes billing'),
+      planMode: true,
+    });
+
+    const saved = path.join(workspace.path, '.context', 'plans', 'billing.md');
+    await waitFor(async () => existsSync(saved));
+    expect(await readFile(saved, 'utf8')).toContain('### acme-web');
+  });
+
   it('leaves plan mode once the user approves the plan', async () => {
     const workspace = await createWorkspace();
     const [session] = workspace.sessions;
@@ -1741,6 +1754,12 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     );
     expect(prompt).toContain('Implement the plan.');
     expect(prompt).toContain('Do not build them here: ui.');
+    expect(
+      await readFile(
+        path.join(origin.path, '.context', 'plans', 'settings.md'),
+        'utf8',
+      ),
+    ).toContain('### api');
   });
 
   it('hands a Claude plan off to a new tab that implements it', async () => {
