@@ -4,6 +4,10 @@ Korev shows the section of each version in its "What's new" window, and korev.ai
 
 ## [Unreleased]
 
+### New
+
+- **Plans saved as files.** Korev saves each plan in the workspace's `.context/plans` folder, under a name taken from the plan's title.
+
 ## [0.12.0] - 2026-10-13
 
 Copy an agent's answer from the chat with its formatting.

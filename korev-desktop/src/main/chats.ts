@@ -1,6 +1,9 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { planFileName } from '../shared/message';
 import {
   conversationText,
+  finishedCodexPlan,
   hasWorktree,
   PLAN_TOOL,
   type AskChat,
@@ -62,6 +65,7 @@ import {
   workspaceConfig,
 } from './workspaces';
 
+const PLANS_DIR = path.join('.context', 'plans');
 const TITLE_MAX_CHARS = 32;
 const SAVE_EVERY_ITEMS = 20;
 const STDERR_TAIL_CHARS = 2_000;
@@ -125,6 +129,12 @@ export function lanesElsewhereNote(lanes: PlanLane[]): string {
   return `${LANES_ELSEWHERE_NOTE}${names}.`;
 }
 
+async function savePlan(workspacePath: string, plan: string) {
+  const dir = path.join(workspacePath, PLANS_DIR);
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, planFileName(plan)), plan);
+}
+
 export function systemPrompt(
   repo: Repo,
   workspace: Workspace,
@@ -135,7 +145,7 @@ export function systemPrompt(
     `You are working inside Korev, a Mac app that lets the user run many coding agents in parallel.`,
     `Your work should take place in the ${workspace.path} directory (unless otherwise directed), which has been set up for you to work in.`,
     `It is a git worktree of ${repo.name} on branch ${workspace.branch}. The target branch for this workspace is origin/${workspace.baseBranch}. Use this for actions like diffing (\`git diff origin/${workspace.baseBranch}...\`) or creating PRs (\`gh pr create --base ${workspace.baseBranch}\`).`,
-    `The workspace has a .context directory (gitignored) where you can save files to collaborate with other agents.`,
+    `The workspace has a .context directory (gitignored) where you can save files to collaborate with other agents. Save the documents, screenshots and other files you generate there too: the user sees them as artifacts.`,
     `Do not rename the current branch unless the user explicitly tells you to do so.`,
     `If the work needs more than one PR, create the extra branches in this worktree (for example as a stack). Do not create new git worktrees.`,
     `If a plan has parts that can be built at the same time without each other's code, end the plan with a "## Lanes" section: one "### <short-name>" heading per part, followed by what it covers and its PRs. Keep dependent work in the same lane. Write two or more lanes, or no Lanes section. The user can then start each lane in its own linked workspace. If the lanes need results from work that must run first, such as queries or research, leave the Lanes section out: plan and do that work first. When it is done, ask the user to turn on plan mode for the lanes. Then write a plan with the Lanes section and put the results the lanes need in it, because each lane gets the whole plan.`,
@@ -349,6 +359,10 @@ export function createChats(
     turn.permissions.clear();
   }
 
+  function keepPlan(workspace: Workspace, plan: string) {
+    ctx.background(savePlan(workspace.path, plan).catch(() => undefined));
+  }
+
   function finishWorkspaceTurn(
     workspace: Workspace,
     session: ChatSession,
@@ -358,6 +372,8 @@ export function createChats(
     const runtime = ctx.runtime(workspace.id);
     if (!isWatching(workspace)) runtime.unread = true;
     ctx.background(refreshStats(ctx, workspace));
+    const codexPlan = finishedCodexPlan(session, items, false);
+    if (codexPlan) keepPlan(workspace, codexPlan.plan);
     onWorkspaceTurnFinished(workspace.id, {
       sessionId: session.id,
       startedAt: turn.startedAt,
@@ -498,6 +514,8 @@ export function createChats(
       answerControl(turn, request, denyResponse(ASK_PLAN_MESSAGE));
       return;
     }
+    if (turn.owner.kind === 'workspace' && request.tool === PLAN_TOOL)
+      keepPlan(turn.owner.workspace, String(request.input.plan ?? ''));
     if (
       !request.needsUser &&
       !ctx.store.state.settings.toolApprovals &&
