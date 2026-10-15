@@ -32,6 +32,7 @@ import {
   sidebarEntries,
   sidebarRepoId,
   waitsForLane,
+  workspaceLabel,
 } from '../shared/workspaces';
 import {
   archiveWorkspace,
@@ -226,6 +227,8 @@ function WorkspaceRow({
   const stats = runtime?.stats;
   const hasStats = stats && (stats.additions > 0 || stats.deletions > 0);
   const title = member ? member.repo : workspace.branch;
+  const label = workspaceLabel(workspace);
+  const [renaming, setRenaming] = useState(false);
   const [naming, setNaming] = useState(false);
   const folderHolder = crossRepoLead(state, workspace) ?? workspace;
   async function createFolderWithWorkspace(name: string) {
@@ -239,9 +242,7 @@ function WorkspaceRow({
         tabIndex={0}
         aria-current={selected ? 'page' : undefined}
         aria-label={
-          member
-            ? `Workspace ${workspace.name} in ${member.repo}`
-            : `Workspace ${workspace.name}`
+          member ? `Workspace ${label} in ${member.repo}` : `Workspace ${label}`
         }
         {...draggable(WORKSPACE_DRAG_TYPE, workspace.id)}
         onClick={() => selectWorkspace(workspace.id)}
@@ -280,7 +281,9 @@ function WorkspaceRow({
             ) : (
               <>
                 <LinkedIcon state={state} workspace={workspace} />
-                <span className="truncate">{workspace.name}</span>
+                <span className="truncate" title={workspace.name}>
+                  {label}
+                </span>
               </>
             )}
             {runtime?.message ? (
@@ -310,9 +313,15 @@ function WorkspaceRow({
         </span>
         <span className="absolute top-1 right-1 hidden group-hover:flex has-[[role=menu]]:flex">
           <Menu
-            label={`${workspace.name} actions`}
+            label={`${label} actions`}
             align="right"
             items={[
+              {
+                id: 'rename',
+                label: 'Rename',
+                icon: 'pencil',
+                onSelect: () => setRenaming(true),
+              },
               {
                 id: 'open',
                 label: 'Open in Finder',
@@ -361,8 +370,17 @@ function WorkspaceRow({
           />
         </span>
       </div>
+      {renaming ? (
+        <NameDialog
+          title="Rename workspace"
+          initialName={label}
+          submitLabel="Rename"
+          onSubmit={(name) => api.renameWorkspace(workspace.id, name)}
+          onClose={() => setRenaming(false)}
+        />
+      ) : null}
       {naming ? (
-        <FolderNameDialog
+        <NameDialog
           title="New folder"
           submitLabel="Create"
           onSubmit={createFolderWithWorkspace}
@@ -424,7 +442,7 @@ function useCollapsed(
   return [key === 'expandedRepos' ? !listed : listed, toggle] as const;
 }
 
-function FolderNameDialog({
+function NameDialog({
   title,
   initialName = '',
   submitLabel,
@@ -593,7 +611,7 @@ function WorkspaceFolderSection({
         </span>
       </div>
       {renaming ? (
-        <FolderNameDialog
+        <NameDialog
           title="Rename folder"
           initialName={folder.name}
           submitLabel="Rename"
@@ -626,12 +644,12 @@ function LinkedGroup({
   return (
     <div
       role="group"
-      aria-label={`Linked workspace ${lead.name}`}
+      aria-label={`Linked workspace ${workspaceLabel(lead)}`}
       className="flex flex-col gap-0.5"
     >
       <div className="flex h-6 items-center gap-1.5 px-2 text-xs text-fg-3">
         <Icon name="link" size={11} />
-        <span className="truncate">{lead.name}</span>
+        <span className="truncate">{workspaceLabel(lead)}</span>
       </div>
       <div className="flex flex-col gap-0.5 pl-3">
         {members.map((workspace) => (
@@ -781,7 +799,7 @@ function RepoGroup({
         </span>
       </div>
       {naming ? (
-        <FolderNameDialog
+        <NameDialog
           title="New folder"
           submitLabel="Create"
           onSubmit={createFolderWithRepo}
@@ -893,7 +911,7 @@ function FolderSection({
         </span>
       </div>
       {renaming ? (
-        <FolderNameDialog
+        <NameDialog
           title="Rename folder"
           initialName={folder.name}
           submitLabel="Rename"
@@ -1048,7 +1066,7 @@ function History({ state }: { state: AppState }) {
                 className="min-w-0 flex-1 truncate"
                 title={workspace.branch}
               >
-                {workspace.name}
+                {workspaceLabel(workspace)}
                 <span className="ml-1.5 text-xs text-fg-4">
                   {timeAgo(workspace.archivedAt ?? workspace.createdAt)}
                 </span>
@@ -1056,13 +1074,13 @@ function History({ state }: { state: AppState }) {
               <span className="hidden gap-0.5 group-hover:flex">
                 <IconButton
                   icon="archive-restore"
-                  label={`Unarchive ${workspace.name}`}
+                  label={`Unarchive ${workspaceLabel(workspace)}`}
                   size="sm"
                   onClick={() => restoreWorkspace(workspace)}
                 />
                 <IconButton
                   icon="trash-2"
-                  label={`Delete ${workspace.name}`}
+                  label={`Delete ${workspaceLabel(workspace)}`}
                   size="sm"
                   onClick={() => api.deleteWorkspace(workspace.id)}
                 />

@@ -18,6 +18,7 @@ import {
 } from '../shared/model';
 import { errorMessage, terminalRef, type Context } from './context';
 import { planBlock } from '../shared/message';
+import { workspaceLabel } from '../shared/workspaces';
 import {
   addBranchWorktree,
   addDetachedWorktree,
@@ -676,6 +677,7 @@ function addDraftWorkspace(
     archivedAt: null,
     restoredAt: null,
     archiveSnapshot: null,
+    label: null,
     keepAfterMerge: false,
     awaitsLane: false,
     folderId: null,
@@ -796,7 +798,7 @@ function laneFolderId(ctx: Context, origin: Workspace): string {
   const folder = {
     id: ctx.deps.newId(),
     repoId: origin.repoId,
-    name: origin.name,
+    name: workspaceLabel(origin),
   };
   ctx.store.state.workspaceFolders.push(folder);
   origin.folderId = folder.id;
