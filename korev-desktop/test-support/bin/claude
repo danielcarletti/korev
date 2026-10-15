@@ -56,6 +56,7 @@ case "$message" in
     ;;
   *hold-turn*)
     IFS= read -r _
+    echo '{"type":"user","message":{"role":"user","content":"ack"}}'
     ;;
   *share-plan*)
     echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m0"}}}'
