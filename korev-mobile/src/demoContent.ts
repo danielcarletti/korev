@@ -79,6 +79,7 @@ const SETTINGS: Settings = {
   deleteBranchOnArchive: false,
   archiveOnMerge: false,
   toolApprovals: false,
+  orchestration: true,
   loadout: [],
   snippets: [],
   editor: 'cursor',
@@ -389,6 +390,7 @@ export function demoWorld(now: number): DemoWorld {
       darkMode,
     ],
     askChats: [ask],
+    runs: [],
     settings: SETTINGS,
     runtime: {
       [login.id]: demoRuntime({ status: 'working' }),

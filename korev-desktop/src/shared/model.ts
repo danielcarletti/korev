@@ -221,6 +221,90 @@ export interface Workspace {
   prs: TrackedPr[];
 }
 
+export type TaskStatus =
+  | 'pending'
+  | 'dispatched'
+  | 'completed'
+  | 'failed'
+  | 'interrupted';
+
+export type TaskState = TaskStatus | 'ready' | 'blocked';
+
+export type TaskOutcome = 'succeeded' | 'failed';
+
+export interface TaskResult {
+  outcome: TaskOutcome;
+  summary: string;
+  files: string[];
+}
+
+export interface OrchestrationTask {
+  id: string;
+  title: string;
+  spec: string;
+  deps: string[];
+  repoId: string | null;
+  status: TaskStatus;
+  workspaceId: string | null;
+  sessionId: string | null;
+  result: TaskResult | null;
+}
+
+export interface RunQuestion {
+  id: string;
+  taskId: string;
+  askerSessionId: string;
+  question: string;
+  options: string[];
+  answer: string | null;
+}
+
+export interface DecisionGate {
+  id: string;
+  taskId: string;
+  question: string;
+  options: string[];
+  resolution: string | null;
+}
+
+export interface OrchestrationRun {
+  id: string;
+  coordinatorSessionId: string;
+  coordinatorWorkspaceId: string;
+  objective: string;
+  depth: number;
+  parentRunId: string | null;
+  tasks: OrchestrationTask[];
+  questions: RunQuestion[];
+  gates: DecisionGate[];
+  wakes: number;
+  paused: boolean;
+  heldMessages: string[];
+  createdAt: string;
+}
+
+export function taskState(
+  run: OrchestrationRun,
+  task: OrchestrationTask,
+): TaskState {
+  const finished = task.status === 'completed' || task.status === 'failed';
+  const gated = run.gates.some(
+    (gate) => gate.taskId === task.id && gate.resolution === null,
+  );
+  if (gated && !finished) return 'blocked';
+  if (task.status !== 'pending') return task.status;
+  const completed = (id: string) =>
+    run.tasks.some((other) => other.id === id && other.status === 'completed');
+  return task.deps.every(completed) ? 'ready' : 'pending';
+}
+
+export function pendingDecisions(run: OrchestrationRun) {
+  return {
+    gates: run.gates.filter((gate) => gate.resolution === null),
+    questions: run.questions.filter((question) => question.answer === null),
+  };
+}
+
 export interface TrackedPr {
   url: string;
   sessionId: string | null;
@@ -247,6 +331,7 @@ export interface Settings {
   deleteBranchOnArchive: boolean;
   archiveOnMerge: boolean;
   toolApprovals: boolean;
+  orchestration: boolean;
   loadout: string[];
   snippets: Snippet[];
   editor: EditorId;
@@ -506,6 +591,7 @@ export interface AppState {
   workspaces: Workspace[];
   workspaceFolders: WorkspaceFolder[];
   askChats: AskChat[];
+  runs: OrchestrationRun[];
   settings: Settings;
   runtime: Record<string, WorkspaceRuntime>;
   runningSessions: string[];

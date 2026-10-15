@@ -10,6 +10,33 @@ IFS= read -r message
 echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
 echo '{"type":"user","message":{"role":"user","content":"ack"}}'
 case "$message" in
+  *'type=\"worker_done\"'*)
+    echo "$message" > .context/coordinator-woken
+    ;;
+  *'type=\"decision\"'*)
+    echo "$message" > .context/coordinator-decided
+    ;;
+  *gate-demo*)
+    korev task create --title db --spec "migrate the database"
+    korev gate create --task t1 --question "Drop the old table?" --options yes,no
+    ;;
+  *'type=\"worker_idle\"'*)
+    echo "$message" > .context/coordinator-idle
+    ;;
+  *korev-worker-task*)
+    korev done --outcome succeeded --summary "notes written"
+    ;;
+  *orchestrate-*)
+    case "$message" in
+      *orchestrate-quiet*) spec="write notes and stop" ;;
+      *) spec="korev-worker-task: write notes" ;;
+    esac
+    korev run create --objective "Write notes"
+    korev task create --title notes --spec "$spec"
+    korev task create --title publish --spec "publish the notes" --deps t1
+    korev worker start --task t2 > .context/t2-start 2>&1
+    korev worker start --task t1 > .context/t1-start 2>&1
+    ;;
   *make-lanes*"lane of the plan below"*)
     echo "written by the fake agent" > agent-note.txt
     ;;
@@ -47,6 +74,10 @@ case "$message" in
   *signing-fails*)
     echo '{"type":"assistant","message":{"id":"s1","content":[{"type":"tool_use","id":"sign-1","name":"Bash","input":{"command":"git commit"}}]}}'
     echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"sign-1","is_error":true,"content":"error: Couldn'"'"'t sign message: agent refused operation"}]}}'
+    ;;
+  *ask-korev-for-help*)
+    korev help > .context/korev-help
+    echo "$KOREV_AGENT_URL" > .context/agent-url
     ;;
   *run-subagent*)
     echo '{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"task-1","name":"Task","input":{"description":"Explore the repo","prompt":"look around"}}]}}'

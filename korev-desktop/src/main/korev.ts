@@ -38,6 +38,7 @@ import {
   workspaceLabel,
   type MovedOrder,
 } from '../shared/workspaces';
+import { startAgentServer } from './agent-server';
 import { detectAgents, reconcileDefaultModels } from './agents';
 import type { Dictation } from './dictation';
 import type { RemoteAccess } from './remote-access';
@@ -81,12 +82,14 @@ import { listSkills } from './skills';
 import { listIssues, listPullRequests } from './sources';
 import { rangeFileDiff, rangeFiles, searchFiles } from './git-review';
 import { findLocalUrl } from './workspace-setup';
+import { createOrchestration } from './orchestration';
 import { createSpotlight } from './spotlight';
 import { repoFavicon } from './repo-icon';
 import { ATTACHMENTS_DIR, attachmentsDir, openStore } from './store';
 import { createTerminals, type SpawnPty } from './terminals';
 import { isNewer, type Release } from './updates';
 import {
+  addLinkedWorkspace,
   archiveWorkspace,
   createLaneWorkspaces,
   stopWaitingForLanes,
@@ -317,11 +320,15 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
   let whatsNew: ReleaseInfo | null = null;
   const editors = installedEditors(deps.home);
   const backgroundTasks = new Set<Promise<unknown>>();
+  const agentServer = await startAgentServer(deps.cliDir, (call) =>
+    orchestration.runCli(call),
+  );
 
   const ctx: Context = {
     deps,
     store,
     git,
+    agentAccess: agentServer,
     terminals: createTerminals({
       spawnPty: deps.spawnPty,
       shell: deps.shell,
@@ -379,13 +386,14 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       return found;
     },
   };
-  const chats = createChats(
-    ctx,
-    (workspaceId, links) =>
-      void trackOpenedPrs(workspaceId, links)
-        .then(() => refreshPrs(workspaceId))
-        .catch(() => null),
-  );
+  const chats = createChats(ctx, (workspaceId, links) => {
+    void trackOpenedPrs(workspaceId, links)
+      .then(() => refreshPrs(workspaceId))
+      .catch(() => null);
+    ctx.background(
+      orchestration.turnFinished(links.sessionId).catch(() => undefined),
+    );
+  });
   const spotlight = createSpotlight(
     git,
     () => ctx.emitState(),
@@ -399,7 +407,13 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
 
   async function archive(workspaceId: string) {
     await spotlight.disableForWorkspace(workspaceId);
-    return archiveWorkspace(ctx, workspaceId, chats.stopWorkspace);
+    const archived = await archiveWorkspace(
+      ctx,
+      workspaceId,
+      chats.stopWorkspace,
+    );
+    if (archived.ok) await orchestration.workspaceArchived(workspaceId);
+    return archived;
   }
 
   function detectRunUrl(ref: string, data: string) {
@@ -421,6 +435,7 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       workspaces,
       workspaceFolders,
       askChats,
+      runs: store.state.runs,
       settings,
       runtime: Object.fromEntries(
         workspaces.map((ws) => [ws.id, ctx.runtime(ws.id)]),
@@ -678,6 +693,23 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       : IMPLEMENT_APPROVED_PLAN;
     return chats.send(sessionId, implementOptions(chat.session, text));
   }
+
+  function continueChat(sessionId: string, text: string) {
+    const chat = workspaceChat(sessionId);
+    if (!chat) return Promise.resolve(fail('That chat no longer exists'));
+    return chats.send(sessionId, implementOptions(chat.session, text));
+  }
+
+  const orchestration = createOrchestration({
+    ctx,
+    send: (sessionId, options) => chats.send(sessionId, options),
+    continueChat,
+    startWorker: (origin, lane, task) =>
+      addLinkedWorkspace(ctx, origin, lane, task, null, chats.send),
+    stopWorkspace: (workspace) => chats.stopWorkspace(workspace),
+    archive,
+    transcript: (sessionId) => chats.transcript(sessionId),
+  });
 
   function addSession(workspace: Workspace, agent: AgentKind) {
     const session = newChatSession(ctx, agent);
@@ -1151,6 +1183,12 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       return sent.ok ? ok(session.id) : sent;
     },
     archiveWorkspace: (workspaceId) => archive(workspaceId),
+    resumeRun: (runId) => orchestration.resumeRun(runId),
+    resumeTask: (runId, taskId) => orchestration.resumeTask(runId, taskId),
+    answerQuestion: (runId, questionId, answer) =>
+      orchestration.answerQuestion(runId, questionId, answer),
+    resolveGate: (runId, gateId, choice) =>
+      orchestration.resolveGate(runId, gateId, choice),
     async toggleSpotlight(workspaceId) {
       const workspace = workspacePath(workspaceId);
       const repo = ctx.repo(workspace.repoId);
@@ -1452,6 +1490,7 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       await chats.settled();
       await ctx.settled();
       ctx.terminals.closeAll();
+      await agentServer.close();
       await store.flush();
     },
   };

@@ -43,6 +43,27 @@ describe('openStore', () => {
     expect(store.state.workspaces[0].awaitsLane).toBe(false);
   });
 
+  it('marks a worker that was running when Korev quit as interrupted', async () => {
+    const store = await openStore(
+      fileSystemWith({
+        runs: [
+          {
+            tasks: [
+              { id: 't1', status: 'dispatched' },
+              { id: 't2', status: 'completed' },
+            ],
+          },
+        ],
+      }),
+      '/user-data',
+      '/home',
+    );
+    expect(store.state.runs[0].tasks.map((task) => task.status)).toEqual([
+      'interrupted',
+      'completed',
+    ]);
+  });
+
   it('has no workspace folders in a state saved before they existed', async () => {
     const store = await openStore(
       fileSystemWith({ workspaces: [{ sessions: [] }] }),

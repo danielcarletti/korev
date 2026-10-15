@@ -10,6 +10,7 @@ import {
   type AskChat,
   type ChatItem,
   type ChatSession,
+  type OrchestrationRun,
   type Repo,
   type RepoFolder,
   type WorkspaceFolder,
@@ -32,7 +33,20 @@ export interface PersistedState {
   workspaces: Workspace[];
   workspaceFolders: WorkspaceFolder[];
   askChats: AskChat[];
+  runs: OrchestrationRun[];
   settings: Settings;
+}
+
+function interruptedAfterRestart(run: OrchestrationRun): OrchestrationRun {
+  return {
+    ...run,
+    heldMessages: run.heldMessages ?? [],
+    questions: run.questions ?? [],
+    gates: run.gates ?? [],
+    tasks: run.tasks.map((task) =>
+      task.status === 'dispatched' ? { ...task, status: 'interrupted' } : task,
+    ),
+  };
 }
 
 export function defaultSettings(home: string): Settings {
@@ -49,6 +63,7 @@ export function defaultSettings(home: string): Settings {
     deleteBranchOnArchive: false,
     archiveOnMerge: false,
     toolApprovals: false,
+    orchestration: true,
     loadout: [],
     snippets: [],
     editor: 'cursor',
@@ -151,6 +166,9 @@ function sanitize(raw: unknown, home: string): PersistedState {
         session: sessionWithoutLegacyCodexDefault(ask.session),
         lastMessageAt: ask.lastMessageAt ?? ask.createdAt,
       }),
+    ),
+    runs: (Array.isArray(value.runs) ? value.runs : []).map(
+      interruptedAfterRestart,
     ),
     settings,
   };

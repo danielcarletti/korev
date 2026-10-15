@@ -36,6 +36,7 @@ const INSTALLED_RELEASE: Release = {
 };
 
 const FAKE_AGENT_BIN = path.resolve(__dirname, '../../test-support/bin');
+const KOREV_CLI_DIR = path.resolve(__dirname, '../../cli');
 const WAIT_TIMEOUT_MS = 10_000;
 const TEST_TIMEOUT_MS = 30_000;
 
@@ -166,6 +167,7 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
       home,
       userDataPath: path.join(home, 'user-data'),
       signer: path.join(home, 'korev-sign'),
+      cliDir: KOREV_CLI_DIR,
       fs: nodeFileSystem,
       spawnPty: noPty,
       emit,
@@ -669,6 +671,71 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(reverted).toEqual({ ok: true, value: 'Add a note' });
     expect(existsSync(path.join(workspace.path, 'agent-note.txt'))).toBe(false);
     expect(await korev.api.transcript(session.id)).toEqual([]);
+  });
+
+  it('lets a workspace agent run korev only while its turn lasts', async () => {
+    const workspace = await createWorkspace();
+
+    await sendAndWait(workspace.sessions[0].id, 'ask-korev-for-help');
+
+    const contextDir = path.join(workspace.path, '.context');
+    expect(await readFile(path.join(contextDir, 'korev-help'), 'utf8')).toMatch(
+      'korev worker start',
+    );
+    const agentUrl = await readFile(path.join(contextDir, 'agent-url'), 'utf8');
+    const afterTurn = await fetch(agentUrl.trim(), { method: 'POST' });
+    expect(afterTurn.status).toBe(401);
+  });
+
+  async function contextFileOnceWritten(workspace: Workspace, name: string) {
+    const file = path.join(workspace.path, '.context', name);
+    await waitFor(async () => existsSync(file));
+    await waitFor(
+      async () => (await korev.api.getState()).runningSessions.length === 0,
+    );
+    return readFile(file, 'utf8');
+  }
+
+  it('starts a worker for a ready task and wakes the coordinator with its report', async () => {
+    const coordinator = await createWorkspace(task('orchestrate-demo'));
+
+    const woken = await contextFileOnceWritten(
+      coordinator,
+      'coordinator-woken',
+    );
+
+    expect(woken).toContain('notes written');
+    expect(woken).toContain('Now ready: t2');
+    expect(
+      await readFile(
+        path.join(coordinator.path, '.context', 't2-start'),
+        'utf8',
+      ),
+    ).toContain('t2 waits for t1');
+    const state = await korev.api.getState();
+    const [run] = state.runs;
+    expect(run.tasks.map((entry) => entry.status)).toEqual([
+      'completed',
+      'pending',
+    ]);
+    const worker = state.workspaces.find(
+      (ws) => ws.id === run.tasks[0].workspaceId,
+    );
+    expect(worker?.groupId).toBe(
+      state.workspaces.find((ws) => ws.id === coordinator.id)?.groupId,
+    );
+    expect(worker?.groupId).not.toBeNull();
+  });
+
+  it('tells the coordinator when a worker ends its turn without reporting', async () => {
+    const coordinator = await createWorkspace(task('orchestrate-quiet'));
+
+    const idle = await contextFileOnceWritten(coordinator, 'coordinator-idle');
+
+    expect(idle).toContain('without running korev done');
+    expect(idle).toContain('I added agent-note.txt.');
+    const [run] = (await korev.api.getState()).runs;
+    expect(run.tasks[0].status).toBe('dispatched');
   });
 
   it('shows the user message before the checkpoint is taken', async () => {

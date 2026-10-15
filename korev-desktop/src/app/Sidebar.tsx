@@ -41,6 +41,7 @@ import {
   openAsk,
   openBoard,
   openGrid,
+  openRuns,
   openIn,
   openNewWorkspace,
   openSettings,
@@ -1240,6 +1241,14 @@ export function Sidebar({ state }: { state: AppState }) {
           active={pageKind === 'grid'}
           onClick={openGrid}
         />
+        {state.runs.length ? (
+          <NavRow
+            icon="network"
+            label="Runs"
+            active={pageKind === 'runs'}
+            onClick={openRuns}
+          />
+        ) : null}
         <NavRow
           icon="square-kanban"
           label="Board"

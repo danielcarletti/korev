@@ -214,6 +214,77 @@ test('plans a task across two repositories once and hands each its lane', async 
   }
 });
 
+async function appState(window: Page): Promise<AppState> {
+  return (await window.evaluate(() =>
+    (globalThis as unknown as { korev: KorevBridge }).korev.call(
+      'getState',
+      [],
+    ),
+  )) as AppState;
+}
+
+test('lets an agent start a worker and wakes it with the worker report', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'korev-e2e-'));
+  const repo = await createRepo(home);
+  const { app, window } = await launch(home, repo);
+  try {
+    await window.getByRole('button', { name: 'Open project' }).click();
+    await window
+      .getByRole('textbox', { name: 'Message' })
+      .fill('orchestrate-demo');
+    await window.getByRole('textbox', { name: 'Message' }).press('Enter');
+
+    await expect(
+      window.getByRole('main').getByText(/notes written/),
+    ).toBeVisible();
+    const [run] = (await appState(window)).runs;
+    expect(run.tasks.map((task) => task.status)).toEqual([
+      'completed',
+      'pending',
+    ]);
+    const sidebar = window.getByRole('navigation', { name: 'Workspaces' });
+    await expect(
+      sidebar.getByRole('button', { name: 'Workspace notes' }),
+    ).toBeVisible();
+    await expect(
+      window.getByRole('region', { name: 'Message from worker of t1' }),
+    ).toBeVisible();
+    await waitForAgentsToFinish(window);
+    await sidebar.getByRole('button', { name: 'Runs' }).click();
+    const runCard = window.getByRole('region', { name: 'Write notes' });
+    await expect(runCard.getByText('Done')).toBeVisible();
+    await expect(runCard.getByText('Ready')).toBeVisible();
+    await snap(window, '08-orchestration-runs');
+  } finally {
+    await app.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('asks the user to decide in the coordinator chat and passes the choice on', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'korev-e2e-'));
+  const repo = await createRepo(home);
+  const { app, window } = await launch(home, repo);
+  try {
+    await window.getByRole('button', { name: 'Open project' }).click();
+    await window.getByRole('textbox', { name: 'Message' }).fill('gate-demo');
+    await window.getByRole('textbox', { name: 'Message' }).press('Enter');
+
+    await expect(window.getByText('Drop the old table?')).toBeVisible();
+    await waitForAgentsToFinish(window);
+    await snap(window, '09-decision-gate');
+    await window.getByRole('button', { name: 'no', exact: true }).click();
+
+    await expect(
+      window.getByRole('region', { name: 'Message from user' }),
+    ).toContainText('The user chose: no');
+    await waitForAgentsToFinish(window);
+  } finally {
+    await app.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test('asks a question about a repository without creating a workspace', async () => {
   const home = await mkdtemp(path.join(tmpdir(), 'korev-e2e-'));
   const repo = await createRepo(home);
