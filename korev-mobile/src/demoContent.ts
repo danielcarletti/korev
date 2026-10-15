@@ -376,6 +376,7 @@ export function demoWorld(now: number): DemoWorld {
   const state: AppState = {
     repos: [WEB, API],
     folders: [],
+    workspaceFolders: [],
     rootOrder: [WEB.id, API.id],
     workspaces: [
       login,

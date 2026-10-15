@@ -152,6 +152,12 @@ export interface RepoFolder {
   name: string;
 }
 
+export interface WorkspaceFolder {
+  id: string;
+  repoId: string;
+  name: string;
+}
+
 export type WorkspaceSource =
   | { kind: 'new'; baseBranch: string | null }
   | { kind: 'branch'; branch: string }
@@ -209,6 +215,7 @@ export interface Workspace {
   archiveSnapshot: Checkpoint | null;
   keepAfterMerge: boolean;
   awaitsLane: boolean;
+  folderId?: string | null;
   sessions: ChatSession[];
   prs: TrackedPr[];
 }
@@ -496,6 +503,7 @@ export interface AppState {
   folders: RepoFolder[];
   rootOrder: string[];
   workspaces: Workspace[];
+  workspaceFolders: WorkspaceFolder[];
   askChats: AskChat[];
   settings: Settings;
   runtime: Record<string, WorkspaceRuntime>;

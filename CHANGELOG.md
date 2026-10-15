@@ -4,6 +4,10 @@ Korev shows the section of each version in its "What's new" window, and korev.ai
 
 ## [Unreleased]
 
+### New
+
+- **Folders in a repository.** Put workspaces of one repository in a folder from the workspace's menu, or drag a workspace onto a folder. Click a folder to collapse it. Lanes that you split off a plan go into a folder named after the workspace that made the plan.
+
 ## [0.13.1] - 2026-10-15
 
 Files in the file viewer show the right colors for their language.
