@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { cn, Icon, Kbd, type IconName } from '../design-system';
-import type { AppState } from '../shared/model';
+import type { AppState, ChatMatch, Workspace } from '../shared/model';
 import {
+  activateTab,
   archiveWorkspace,
   createPr,
   newChat,
@@ -9,6 +10,7 @@ import {
   openDiff,
   openFile,
   openSearch,
+  openAsk,
   openNewWorkspace,
   openRuns,
   openSettings,
@@ -20,7 +22,7 @@ import { api } from './bridge';
 import { fileName, timeAgo } from '../shared/format';
 import { workspaceLabel } from '../shared/workspaces';
 import { openProject } from './Sidebar';
-import { setUi, useUi } from './ui-store';
+import { setUi, tabKey, useUi } from './ui-store';
 
 interface PaletteItem {
   id: string;
@@ -33,6 +35,14 @@ interface PaletteItem {
 }
 
 const RESULT_LIMIT = 40;
+const CHAT_SEARCH_DELAY_MS = 150;
+const CHAT_SEARCH_MIN_CHARS = 2;
+
+function prNumbers(workspace: Workspace): string {
+  return workspace.prs
+    .map((pr) => ` · #${pr.url.slice(pr.url.lastIndexOf('/') + 1)}`)
+    .join('');
+}
 
 function paletteItems(
   state: AppState,
@@ -50,7 +60,7 @@ function paletteItems(
       (ws): PaletteItem => ({
         id: `ws:${ws.id}`,
         label: ws.branch,
-        detail: `${repoName(ws.repoId)} · ${workspaceLabel(ws)}${ws.archivedAt ? ' · archived' : ''} · ${timeAgo(ws.createdAt)}`,
+        detail: `${repoName(ws.repoId)} · ${workspaceLabel(ws)}${prNumbers(ws)}${ws.archivedAt ? ' · archived' : ''} · ${timeAgo(ws.createdAt)}`,
         icon: ws.archivedAt ? 'archive' : 'git-branch',
         section: 'Workspaces',
         run: () =>
@@ -165,6 +175,65 @@ function paletteItems(
   return [...workspaces, ...actions];
 }
 
+async function openChat(workspace: Workspace, sessionId: string) {
+  if (workspace.archivedAt) await restoreWorkspace(workspace);
+  else selectWorkspace(workspace.id);
+  activateTab(workspace.id, tabKey({ kind: 'chat', sessionId }));
+}
+
+function chatItems(state: AppState, matches: ChatMatch[]): PaletteItem[] {
+  return matches.flatMap((match): PaletteItem[] => {
+    const id = `chat:${match.sessionId}`;
+    if (match.owner.kind === 'ask') {
+      const askChatId = match.owner.id;
+      return [
+        {
+          id,
+          label: match.title,
+          detail: match.snippet,
+          icon: 'message-circle-question',
+          section: 'Threads',
+          run: () => openAsk(askChatId),
+        },
+      ];
+    }
+    const workspace = state.workspaces.find((ws) => ws.id === match.owner.id);
+    if (!workspace) return [];
+    return [
+      {
+        id,
+        label: match.title,
+        detail: `${workspace.branch} · ${match.snippet}`,
+        icon: 'message-square',
+        section: 'Threads',
+        run: () => void openChat(workspace, match.sessionId),
+      },
+    ];
+  });
+}
+
+function useChatMatches(query: string): ChatMatch[] {
+  const [matches, setMatches] = useState<ChatMatch[]>([]);
+  useEffect(() => {
+    const needle = query.trim();
+    if (needle.length < CHAT_SEARCH_MIN_CHARS) {
+      setMatches([]);
+      return undefined;
+    }
+    let current = true;
+    const timer = setTimeout(() => {
+      void api.searchChats(needle).then((found) => {
+        if (current) setMatches(found);
+      });
+    }, CHAT_SEARCH_DELAY_MS);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [query]);
+  return matches;
+}
+
 function useWorkspaceFiles(workspaceId: string | null): string[] {
   const [files, setFiles] = useState<string[]>([]);
   useEffect(() => {
@@ -196,6 +265,7 @@ export function CommandPalette({ state }: { state: AppState }) {
   const [selected, setSelected] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const files = useWorkspaceFiles(open === 'files' ? workspaceId : null);
+  const chatMatches = useChatMatches(open === 'files' ? '' : query);
   const items = useMemo(
     () =>
       open === 'files'
@@ -208,10 +278,12 @@ export function CommandPalette({ state }: { state: AppState }) {
     const byKey = new Map(
       items.map((item) => [`${item.label} ${item.detail ?? ''}`, item]),
     );
-    return fuzzyRank(query.trim(), [...byKey.keys()], RESULT_LIMIT).flatMap(
-      (key) => byKey.get(key) ?? [],
-    );
-  }, [items, query]);
+    const ranked = fuzzyRank(query.trim(), [...byKey.keys()], RESULT_LIMIT);
+    return [
+      ...ranked.flatMap((key) => byKey.get(key) ?? []),
+      ...chatItems(state, chatMatches),
+    ];
+  }, [items, query, state, chatMatches]);
 
   useEffect(() => {
     if (!open) return;
@@ -247,7 +319,7 @@ export function CommandPalette({ state }: { state: AppState }) {
             placeholder={
               open === 'files'
                 ? 'Go to file'
-                : 'Search workspaces, actions and settings'
+                : 'Search workspaces, threads, actions and settings'
             }
             className="h-12 flex-1 border-0 bg-transparent text-md text-fg-1 outline-none placeholder:text-fg-4"
             onChange={(event) => {

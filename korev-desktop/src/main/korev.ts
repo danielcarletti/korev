@@ -1284,6 +1284,7 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       rangeFiles(git, workspacePath(workspaceId).path, range),
     searchFiles: (workspaceId, query, options) =>
       searchFiles(git, workspacePath(workspaceId).path, query, options),
+    searchChats: (query) => chats.search(query),
     async writeFile(workspaceId, file, contents) {
       const target = insideWorkspace(workspacePath(workspaceId).path, file);
       if (!target) return fail('That file is outside the workspace');

@@ -4,6 +4,10 @@ Korev shows the section of each version in its "What's new" window, and korev.ai
 
 ## [Unreleased]
 
+### New
+
+- **Search chat history.** The command palette (⌘K) now finds chats by what you and the agent wrote in them, not only by workspace name. Type a PR number such as `#292` to find the chats that mention or link that PR, and the workspace that tracks it.
+
 ## [0.15.0] - 2026-10-15
 
 Let one agent run a team of other agents, and see every workspace on one board.
