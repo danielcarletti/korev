@@ -368,7 +368,9 @@ export function CommandPalette({ state }: { state: AppState }) {
                   onClick={() => run(item)}
                 >
                   <Icon name={item.icon} size={14} className="text-fg-3" />
-                  <span className="truncate">{item.label}</span>
+                  <span className="max-w-1/2 flex-none truncate">
+                    {item.label}
+                  </span>
                   {item.detail ? (
                     <span className="truncate text-xs text-fg-4">
                       {item.detail}

@@ -278,7 +278,9 @@ export interface Chats {
 }
 
 const CHAT_MATCH_LIMIT = 20;
-const SNIPPET_CONTEXT_CHARS = 40;
+// The row cuts the snippet off at its end, so keep the match near its start.
+const SNIPPET_CHARS_BEFORE = 20;
+const SNIPPET_CHARS_AFTER = 80;
 const PR_NUMBER_QUERY = /^#(\d+)$/;
 
 // Agents mostly link a PR by its URL, so `#292` also finds `.../pull/292`.
@@ -291,8 +293,8 @@ function searchPattern(query: string): RegExp {
 function matchSnippet(text: string, pattern: RegExp): string | null {
   const match = pattern.exec(text);
   if (!match) return null;
-  const start = Math.max(0, match.index - SNIPPET_CONTEXT_CHARS);
-  const end = match.index + match[0].length + SNIPPET_CONTEXT_CHARS;
+  const start = Math.max(0, match.index - SNIPPET_CHARS_BEFORE);
+  const end = match.index + match[0].length + SNIPPET_CHARS_AFTER;
   const snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
   return `${start > 0 ? '…' : ''}${snippet}${end < text.length ? '…' : ''}`;
 }
