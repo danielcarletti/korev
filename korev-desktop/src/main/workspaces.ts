@@ -5,6 +5,7 @@ import {
   presetLaneRepo,
   type AgentKind,
   type ChatSession,
+  type ModelSetting,
   type GitWorktree,
   type LaneRepo,
   type PlanLane,
@@ -102,6 +103,17 @@ export function newChatSession(ctx: Context, agent: AgentKind): ChatSession {
     agentSessionId: null,
     forkOnNextTurn: false,
     createdAt: ctx.deps.now().toISOString(),
+  };
+}
+
+export function chatSessionOn(
+  ctx: Context,
+  setting: ModelSetting | null,
+): ChatSession {
+  const { defaultAgent } = ctx.store.state.settings;
+  return {
+    ...newChatSession(ctx, setting?.agent ?? defaultAgent),
+    ...setting,
   };
 }
 
@@ -1069,7 +1081,7 @@ export async function deleteWorkspace(ctx: Context, workspaceId: string) {
   if (!workspace.archivedAt) return;
   state.workspaces = state.workspaces.filter((ws) => ws.id !== workspaceId);
   await Promise.all(
-    workspace.sessions.map((session) => ctx.store.removeTranscript(session.id)),
+    workspace.sessions.map((session) => ctx.store.removeSession(session.id)),
   );
   ctx.store.save();
   ctx.emitState();

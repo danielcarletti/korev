@@ -1,3 +1,5 @@
+import type { ExplainerRef } from './explainer';
+
 export type AgentKind = 'claude' | 'codex';
 
 export const AGENT_KINDS: readonly AgentKind[] = ['claude', 'codex'];
@@ -193,6 +195,7 @@ export interface ChatSession {
   forkOnNextTurn: boolean;
   createdAt: string;
   pendingPlan?: PendingPlan;
+  explainer?: ExplainerRef;
 }
 
 export interface PendingPlan {
@@ -326,7 +329,8 @@ export interface Settings {
   workspacesRoot: string;
   defaultEffort: Record<AgentKind, string>;
   defaultPlanMode: boolean;
-  reviewModel: ReviewModel | null;
+  reviewModel: ModelSetting | null;
+  explainModel: ModelSetting | null;
   autoRenameBranches: boolean;
   deleteBranchOnArchive: boolean;
   archiveOnMerge: boolean;
@@ -347,7 +351,7 @@ export interface Settings {
   lastSeenVersion: string | null;
 }
 
-export interface ReviewModel {
+export interface ModelSetting {
   agent: AgentKind;
   model: string;
   effort: string;

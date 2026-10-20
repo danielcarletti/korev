@@ -93,6 +93,35 @@ PR, Fix errors and Resolve conflicts send a prompt to the active chat; Merge cal
   Clicking it opens a popover with the token counts and the agent's plan limits (5-hour
   and weekly).
 
+## Explainer
+
+An explainer is a chat session whose agent writes a plain-words walkthrough of a change. Korev
+shows it in the chat area, so it works in a workspace tab, an Ask chat and a Grid pane.
+
+- **Explanation | Chat.** A pill switch on top of the session. It opens on Explanation. Sending a
+  message switches to Chat. In Chat, the agent's JSON block shows as an "Explanation ready ·
+  Open" chip.
+- **Sections**, top to bottom: header (number, author, file count, `+N −M`, **Open on GitHub**,
+  **Export HTML**),
+  "In one sentence" card, Before and After cards (After uses `accent-subtle`), How it works
+  (numbered boxes joined by arrows; click one for its detail), Walkthrough, Look closely, Questions
+  for the author, Other files, Words used here.
+- **Walkthrough.** The steps on the left with a progress bar of the steps marked understood. The
+  step on the right has its text, a "Why" box on `accent-subtle`, and the diff rows the step cites,
+  drawn with the same rows as the Changes diff. ←/→ move between steps.
+- **Risk colours.** Look closely uses the `risk-*` tokens: high, medium, low.
+- **Stacks.** Under the title, "Stack of N" lists the pull requests from the bottom up. **The stack**
+  section comes after Before and After: one card per pull request with its number, title, what it adds
+  and a button to its first step. Each walkthrough step shows its pull request number under its title.
+- **Glossary terms** have a dotted underline and a tooltip with the meaning.
+- **Not explained.** Changed files that no step and no routine entry names show in a `warning`
+  box, so the explanation can never hide a file.
+- **Export HTML** writes one file with its own styles copied from the token values, light and dark
+  through `prefers-color-scheme`. It has no scripts: steps are `<details>`, glossary terms are
+  `<abbr>`.
+- **Banners** above the explanation: neutral while it updates, `danger` when an update failed,
+  `warning` with **Update** when the change moved on.
+
 ## Release notes
 
 "What's new" (after an update) and "Korev X is available" share one 560 px dialog. The title is
@@ -132,6 +161,12 @@ Notes** opens the same page.
   pickers, the composer, the PR bar) stop growing at 1.4× (`CHROME_FONT_SCALE`), so they never
   push the chat off the screen. Chat text and list rows scale fully.
 - **On amber.** Text on a `warning` fill, like the tab badge, uses `fgOnWarning`.
+- **Explainer.** A chat with an explainer opens on Explanation, with an Explanation | Chat switch
+  under the header. The sections follow the desktop in one column. Walkthrough steps are cards
+  that open one at a time. Glossary terms have a dotted underline; tapping one shows its meaning.
+  Diff rows use `diffAddBg`, `diffDelBg` and `diffHunkBg`, and risks use `riskHigh`, `riskMedium`
+  and `riskLow` with their `Subtle` backgrounds. The pull request bar has **Explain** next to the
+  next step, and the Ask tab header has a book button that opens "Explain a pull request".
 - **Linked group.** The workspace list follows the desktop's Linked group: one entry under the
   lead's repository, a link-icon label with the shared name, and indented rows that lead with
   the repository name. The workspace title is "<repository> · <name>", and a waiting workspace's
