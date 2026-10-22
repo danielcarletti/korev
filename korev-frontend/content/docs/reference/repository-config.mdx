@@ -14,13 +14,14 @@ Korev reads the first of these that exists, from the workspace's own checkout:
 3. `.conductor/settings.toml`, with `.conductor/settings.local.toml` merged on top. Same format as `.korev/settings.toml`.
 4. The scripts and prompts in **Settings → Repositories → your repo**.
 
-The branch prefix and the files to copy are read from the main checkout, because Korev needs them before the worktree exists.
+The branch prefix, the files to copy and the worktree pool size are read from the main checkout, because Korev needs them before the worktree exists.
 
 ## Full example
 
 ```toml
 file_include_globs = ".env*\nconfig/*.local.json"
 spotlight_testing = true
+worktree_pool_size = 4
 
 [scripts]
 setup = "pnpm install"
@@ -57,6 +58,7 @@ branch_prefix = "agent"
 | -------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `file_include_globs` | string | Glob patterns, one per line, for gitignored files to copy into new workspaces. A `.worktreeinclude` file in the repository root replaces it. Without either, Korev uses **Files to copy** from the app's repository settings, and then `.env*`. |
 | `spotlight_testing`  | bool   | Shows the **Spotlight** button in each workspace's Run tab. See [Spotlight testing](../guides/spotlight.mdx).                                                                                                                                   |
+| `worktree_pool_size` | int    | How many worktrees Korev keeps and reuses for new workspaces. `0`, the default, creates a new worktree for each workspace. See [Reuse worktrees](../guides/configure-your-repository.mdx#reuse-worktrees).                                      |
 
 ## `[scripts]`
 
@@ -128,7 +130,8 @@ A simpler format. It supports only these keys:
     "run": "npm run dev -- --port $KOREV_PORT",
     "archive": "./scripts/archive.sh"
   },
-  "runScriptMode": "nonconcurrent"
+  "runScriptMode": "nonconcurrent",
+  "worktreePoolSize": 4
 }
 ```
 

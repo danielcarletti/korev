@@ -1,4 +1,4 @@
-import { appendFile, copyFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Checkpoint,
@@ -235,6 +235,45 @@ export function addDetachedWorktree(
   from: string,
 ): Promise<void> {
   return createWorktree(git, repo, worktree, ['--detach', worktree, from]);
+}
+
+async function switchWorktree(git: Git, worktree: string, args: string[]) {
+  // The last workspace's artifacts must not show up in the next one.
+  await rm(path.join(worktree, CONTEXT_DIR), { recursive: true, force: true });
+  await git.run(worktree, ['switch', '--quiet', ...args]);
+  await prepareWorktree(git, worktree);
+}
+
+export function switchToNewBranch(
+  git: Git,
+  worktree: string,
+  branch: string,
+  from: string,
+): Promise<void> {
+  return switchWorktree(git, worktree, ['--no-track', '-c', branch, from]);
+}
+
+export function switchToBranch(
+  git: Git,
+  worktree: string,
+  branch: string,
+): Promise<void> {
+  return switchWorktree(git, worktree, [branch]);
+}
+
+// No -x: gitignored caches such as node_modules are what make a reused worktree fast.
+export async function cleanWorktree(git: Git, worktree: string) {
+  await git.run(worktree, ['clean', '-fd']);
+}
+
+export async function detachWorktree(git: Git, worktree: string) {
+  await git.tryRun(worktree, ['switch', '--detach']);
+  await git.tryRun(worktree, ['reset', '--hard']);
+  await git.tryRun(worktree, ['clean', '-fd']);
+}
+
+export async function isClean(git: Git, worktree: string): Promise<boolean> {
+  return (await git.tryRun(worktree, ['status', '--porcelain'])) === '';
 }
 
 export async function checkoutDetached(

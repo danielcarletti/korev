@@ -133,6 +133,7 @@ export interface RepoConfig {
   deleteBranchOnArchive: boolean | null;
   branchPrefix: string | null;
   spotlightTesting: boolean;
+  worktreePoolSize: number;
 }
 
 export interface Repo {
@@ -144,6 +145,7 @@ export interface Repo {
   spotlightTesting?: boolean;
   prompts?: RepoPrompts;
   fileIncludeGlobs?: string;
+  worktreePoolSize?: number;
   folderId?: string | null;
 }
 

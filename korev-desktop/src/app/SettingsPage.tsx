@@ -1108,6 +1108,32 @@ function RepoPromptSettings({ state, repo }: { state: AppState; repo: Repo }) {
   );
 }
 
+function PoolSizeSetting({ repo }: { repo: Repo }) {
+  const saved = String(repo.worktreePoolSize ?? 0);
+  const [draft, setDraft] = useState(saved);
+  useEffect(() => setDraft(saved), [repo.id, saved]);
+  return (
+    <Input
+      aria-label="Worktree pool size"
+      className="w-20"
+      type="number"
+      min={0}
+      step={1}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        const size = Number(draft);
+        if (draft === saved || !Number.isInteger(size) || size < 0)
+          return setDraft(saved);
+        void api.updateRepo(repo.id, { worktreePoolSize: size });
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
+
 function IncludeFilesSettings({ repo }: { repo: Repo }) {
   const saved = repo.fileIncludeGlobs || DEFAULT_INCLUDE_GLOBS;
   const [globs, setGlobs] = useState(saved);
@@ -1302,6 +1328,12 @@ function RepoSettings({ state, repo }: { state: AppState; repo: Repo }) {
             void api.updateRepo(repo.id, { defaultBranch })
           }
         />
+      </Row>
+      <Row
+        title="Worktree pool"
+        description="How many worktrees to keep and reuse for new workspaces. A reused worktree keeps its gitignored files, such as node_modules, so setup is fast. Archiving a workspace frees its worktree instead of deleting it. 0 creates a new worktree for each workspace. worktree_pool_size in the repository's settings file replaces this number."
+      >
+        <PoolSizeSetting repo={repo} />
       </Row>
       <IncludeFilesSettings repo={repo} />
       <div className="py-4">
