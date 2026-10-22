@@ -8,6 +8,7 @@ import {
   planOf,
   PLAN_TOOL,
   prBadge,
+  replyToQuestions,
   type AgentQuestion,
   type ChatItem,
   type ChatSession,
@@ -39,6 +40,57 @@ describe('answerQuestions', () => {
     ).toEqual({
       allow: true,
       answers: { 'Which database?': 'Postgres', 'Which tests?': 'Unit, E2E' },
+    });
+  });
+});
+
+describe('replyToQuestions', () => {
+  const questions = [
+    question('Which database?'),
+    question('Which tests?', true),
+  ];
+
+  it('answers every question you did not pick an option for with the reply', () => {
+    expect(
+      replyToQuestions(questions, { 'Which database?': ['Postgres'] }, 'None'),
+    ).toEqual({
+      allow: true,
+      answers: { 'Which database?': 'Postgres', 'Which tests?': 'None' },
+    });
+  });
+
+  it('sends only the picks when there is no reply', () => {
+    expect(
+      replyToQuestions(
+        questions,
+        { 'Which database?': ['Postgres'], 'Which tests?': ['Unit'] },
+        ' ',
+      ),
+    ).toEqual({
+      allow: true,
+      answers: { 'Which database?': 'Postgres', 'Which tests?': 'Unit' },
+    });
+  });
+
+  it('waits for a pick or a reply for every question', () => {
+    expect(
+      replyToQuestions(questions, { 'Which database?': ['Postgres'] }, ''),
+    ).toBeNull();
+  });
+
+  it('adds the reply to every answer when you picked an option for each', () => {
+    expect(
+      replyToQuestions(
+        questions,
+        { 'Which database?': ['Postgres'], 'Which tests?': ['Unit'] },
+        'and keep it fast',
+      ),
+    ).toEqual({
+      allow: true,
+      answers: {
+        'Which database?': 'Postgres, and keep it fast',
+        'Which tests?': 'Unit, and keep it fast',
+      },
     });
   });
 });

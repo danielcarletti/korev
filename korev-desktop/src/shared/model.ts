@@ -757,6 +757,7 @@ export interface PermissionResponse {
 }
 
 export const PLAN_TOOL = 'ExitPlanMode';
+export const QUESTION_TOOL = 'AskUserQuestion';
 
 export function isSubagentTool(item: ChatItem): boolean {
   return item.kind === 'tool' && Boolean(item.parentToolId);
@@ -768,6 +769,9 @@ export const PLAN_FEEDBACK_PLACEHOLDER =
   'Tell the agent what to change in the plan';
 export const KEEP_PLANNING_HINT =
   'To change the plan, send feedback from the message box below.';
+export const QUESTION_REPLY_PLACEHOLDER = 'Type your own answer';
+export const QUESTION_REPLY_HINT =
+  'Pick an option, type your own answer below, or both. Then send.';
 
 export function planOf(items: ChatItem[]): string | null {
   const planTool = items.findLast(
@@ -875,6 +879,18 @@ export function finishedCodexPlan(
   return plan ? { id: last.id, plan } : null;
 }
 
+export function questionAwaitingAnswer(
+  items: ChatItem[] | null,
+): Extract<ChatItem, { kind: 'permission' }> | null {
+  const item = items?.find(
+    (entry) =>
+      entry.kind === 'permission' &&
+      entry.questions !== null &&
+      entry.status === 'pending',
+  );
+  return item?.kind === 'permission' ? item : null;
+}
+
 export function planAwaitingReview(items: ChatItem[] | null): boolean {
   return Boolean(
     items?.some(
@@ -909,6 +925,67 @@ export const DISMISS_QUESTION: PermissionResponse = {
   allow: false,
   message: 'The user dismissed the question.',
 };
+
+export type QuestionPicks = Record<string, string[]>;
+
+export interface PickedAnswers {
+  itemId: string;
+  picks: QuestionPicks;
+}
+
+const NO_PICKS: QuestionPicks = {};
+
+export function picksFor(
+  picked: PickedAnswers | null,
+  itemId: string | undefined,
+): QuestionPicks {
+  return picked && picked.itemId === itemId ? picked.picks : NO_PICKS;
+}
+
+export function withPick(
+  picked: PickedAnswers | null,
+  itemId: string,
+  question: string,
+  labels: string[],
+): PickedAnswers {
+  return {
+    itemId,
+    picks: { ...picksFor(picked, itemId), [question]: labels },
+  };
+}
+
+export function togglePick(
+  question: AgentQuestion,
+  picked: string[],
+  label: string,
+): string[] {
+  if (!question.multiSelect) return [label];
+  return picked.includes(label)
+    ? picked.filter((entry) => entry !== label)
+    : [...picked, label];
+}
+
+export function replyToQuestions(
+  questions: AgentQuestion[],
+  picks: QuestionPicks,
+  reply: string,
+): PermissionResponse | null {
+  const typed = reply.trim() ? [reply.trim()] : [];
+  const pickedAll = questions.every(
+    (question) => picks[question.question]?.length,
+  );
+  const answerFor = (question: AgentQuestion) => {
+    const picked = picks[question.question] ?? [];
+    if (!picked.length) return typed;
+    return pickedAll ? [...picked, ...typed] : picked;
+  };
+  return answerQuestions(
+    questions,
+    Object.fromEntries(
+      questions.map((question) => [question.question, answerFor(question)]),
+    ),
+  );
+}
 
 export function answerQuestions(
   questions: AgentQuestion[],
@@ -947,6 +1024,7 @@ export interface SendOptions {
   effort: string;
   planMode: boolean;
   fast: boolean;
+  answers?: Record<string, string[]>;
 }
 
 export type FileStatus = 'A' | 'M' | 'D' | 'R';

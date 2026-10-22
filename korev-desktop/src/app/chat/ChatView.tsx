@@ -3,8 +3,15 @@ import { Button, Icon, Spinner, Tabs } from '../../design-system';
 import {
   AGENT_LABELS,
   finishedCodexPlan,
+  answerQuestions,
   planAwaitingReview,
   PLAN_FEEDBACK_PLACEHOLDER,
+  QUESTION_REPLY_PLACEHOLDER,
+  questionAwaitingAnswer,
+  type PermissionResponse,
+  picksFor,
+  withPick,
+  type PickedAnswers,
   STOP_BEFORE_SWITCHING,
   type AppState,
   type ChatItem,
@@ -44,6 +51,7 @@ import { ExplainerView } from '../explainer/ExplainerView';
 import { Composer, saveDraft } from './Composer';
 import { RunDecisions } from '../RunsPage';
 import { PlanReview } from './PermissionCard';
+import { QuestionPanel } from './QuestionPanel';
 import { Transcript } from './Transcript';
 
 function toWorkspaceRelative(workspacePath: string, file: string): string {
@@ -68,6 +76,7 @@ const EXPLAINER_TABS = [
 ];
 const EXPLAINER_PLACEHOLDER = 'Ask a question about this change';
 const PLAN_FEEDBACK_HINT = 'Sends feedback on the plan';
+const QUESTION_REPLY_SEND_HINT = 'Answers the question';
 const SWITCH_REPLAYS_CHAT =
   'Switching agents mid-chat replays the conversation, so the next reply is slower and uses more tokens';
 
@@ -147,6 +156,7 @@ export function ChatView({
       : NO_COMMENTS,
   );
   const [draftVersion, setDraftVersion] = useState(0);
+  const [picked, setPicked] = useState<PickedAnswers | null>(null);
   const agent = state.agents.find((entry) => entry.agent === session.agent);
   const archived = Boolean(workspace?.archivedAt);
   const chatRepoId = workspace?.repoId ?? repoId ?? null;
@@ -183,6 +193,12 @@ export function ChatView({
     });
   }
 
+  const question = questionAwaitingAnswer(items);
+  const picks = picksFor(picked, question?.id);
+  const answerReady = Boolean(
+    question?.questions && answerQuestions(question.questions, picks),
+  );
+
   function send(text: string) {
     if (session.explainer) setExplainerMode('chat');
     return api
@@ -193,8 +209,19 @@ export function ChatView({
         effort: session.effort,
         planMode: session.planMode,
         fast: session.fast,
+        answers: question ? picks : undefined,
       })
       .then(reportFailure);
+  }
+
+  function respond(itemId: string, response: PermissionResponse) {
+    void api
+      .respondPermission(session.id, itemId, response)
+      .then(reportFailure);
+  }
+
+  function pick(itemId: string, questionText: string, labels: string[]) {
+    setPicked((current) => withPick(current, itemId, questionText, labels));
   }
 
   const codexPlan = workspace
@@ -212,7 +239,14 @@ export function ChatView({
   function composerPlaceholder() {
     if (explaining) return EXPLAINER_PLACEHOLDER;
     if (reviewingPlan) return PLAN_FEEDBACK_PLACEHOLDER;
+    if (question) return QUESTION_REPLY_PLACEHOLDER;
     return placeholder;
+  }
+
+  function composerSendHint() {
+    if (reviewingPlan) return PLAN_FEEDBACK_HINT;
+    if (question) return QUESTION_REPLY_SEND_HINT;
+    return undefined;
   }
 
   async function revert(itemId: string) {
@@ -274,11 +308,7 @@ export function ChatView({
                   )
               : undefined
           }
-          onRespond={(itemId, response) =>
-            void api
-              .respondPermission(session.id, itemId, response)
-              .then(reportFailure)
-          }
+          onRespond={respond}
           onRetry={(text) => void send(text)}
           onHandoff={handoff}
           onOpenExplainer={
@@ -314,53 +344,68 @@ export function ChatView({
             working.
           </p>
         ) : (
-          <Composer
-            key={`${session.id}:${draftVersion}`}
-            draftKey={session.id}
-            agent={session.agent}
-            models={modelChoices(state, session.agent)}
-            loadout={loadoutChoices(state, session.agent)}
-            snippets={state.settings.snippets}
-            fast={session.fast}
-            repoId={chatRepoId}
-            onFastChange={(fast) =>
-              void api.updateSession(session.id, { fast })
-            }
-            model={session.model}
-            effort={session.effort}
-            planMode={session.planMode}
-            running={running}
-            workspaceId={workspace?.id ?? null}
-            comments={comments}
-            otherTabs={
-              workspace?.sessions.filter((entry) => entry.id !== session.id) ??
-              []
-            }
-            pendingPlan={session.pendingPlan}
-            onDiscardPendingPlan={() =>
-              void api.updateSession(session.id, { pendingPlan: null })
-            }
-            placeholder={composerPlaceholder()}
-            sendHint={reviewingPlan ? PLAN_FEEDBACK_HINT : undefined}
-            autoFocus={autoFocus && !explaining}
-            usage={{
-              context: latestContext(items),
-              limits: state.planLimits[session.agent] ?? [],
-            }}
-            onModelChange={changeModel}
-            onEffortChange={(effort) =>
-              void api.updateSession(session.id, { effort })
-            }
-            onPlanModeChange={(planMode) =>
-              void api.updateSession(session.id, { planMode })
-            }
-            onClearComments={() => {
-              if (workspace)
-                updateWorkspaceUi(workspace.id, () => ({ comments: [] }));
-            }}
-            onStop={() => void api.stop(session.id)}
-            onSend={send}
-          />
+          <>
+            {question?.questions ? (
+              <QuestionPanel
+                key={question.id}
+                questions={question.questions}
+                picks={picks}
+                onPick={(questionText, labels) =>
+                  pick(question.id, questionText, labels)
+                }
+                onRespond={(response) => respond(question.id, response)}
+              />
+            ) : null}
+            <Composer
+              key={`${session.id}:${draftVersion}`}
+              draftKey={session.id}
+              agent={session.agent}
+              models={modelChoices(state, session.agent)}
+              loadout={loadoutChoices(state, session.agent)}
+              snippets={state.settings.snippets}
+              fast={session.fast}
+              repoId={chatRepoId}
+              onFastChange={(fast) =>
+                void api.updateSession(session.id, { fast })
+              }
+              model={session.model}
+              effort={session.effort}
+              planMode={session.planMode}
+              running={running}
+              workspaceId={workspace?.id ?? null}
+              comments={comments}
+              otherTabs={
+                workspace?.sessions.filter(
+                  (entry) => entry.id !== session.id,
+                ) ?? []
+              }
+              pendingPlan={session.pendingPlan}
+              onDiscardPendingPlan={() =>
+                void api.updateSession(session.id, { pendingPlan: null })
+              }
+              placeholder={composerPlaceholder()}
+              sendHint={composerSendHint()}
+              sendReady={answerReady}
+              autoFocus={autoFocus && !explaining}
+              usage={{
+                context: latestContext(items),
+                limits: state.planLimits[session.agent] ?? [],
+              }}
+              onModelChange={changeModel}
+              onEffortChange={(effort) =>
+                void api.updateSession(session.id, { effort })
+              }
+              onPlanModeChange={(planMode) =>
+                void api.updateSession(session.id, { planMode })
+              }
+              onClearComments={() => {
+                if (workspace)
+                  updateWorkspaceUi(workspace.id, () => ({ comments: [] }));
+              }}
+              onStop={() => void api.stop(session.id)}
+              onSend={send}
+            />
+          </>
         )}
         {agent && !agent.version ? (
           <p className="mt-2 mb-0 text-xs text-danger-text">

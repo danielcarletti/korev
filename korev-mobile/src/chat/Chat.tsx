@@ -16,14 +16,19 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { modelLabel } from '../../../korev-desktop/src/shared/format';
 import {
   AGENT_LABELS,
+  answerQuestions,
   finishedCodexPlan,
   planAwaitingReview,
+  questionAwaitingAnswer,
   isSubagentTool,
   type AppState,
   type ChatItem,
   type ChatSession,
   type PermissionResponse,
   type PlanLane,
+  picksFor,
+  withPick,
+  type PickedAnswers,
   type Repo,
 } from '../../../korev-desktop/src/shared/model';
 import { attempt } from '../attempt';
@@ -44,6 +49,7 @@ import { Composer } from './Composer';
 import { ExplainerView } from './ExplainerView';
 import { pendingSend, withPendingMessage, type PendingSend } from './pending';
 import { PlanReview } from './PermissionCard';
+import { QuestionPanel } from './QuestionPanel';
 import { WorkingIndicator } from './WorkingIndicator';
 
 const FADE_MS = 150;
@@ -140,6 +146,7 @@ export function Chat({
   const [scrolledBack, setScrolledBack] = useState(false);
   const [pending, setPending] = useState<PendingSend | null>(null);
   const [mode, setMode] = useState<ChatMode>('explainer');
+  const [picked, setPicked] = useState<PickedAnswers | null>(null);
   const explaining = Boolean(session.explainer) && mode === 'explainer';
   const running = state.runningSessions.includes(session.id);
   const shown = items && withPendingMessage(items, pending);
@@ -159,6 +166,8 @@ export function Chat({
     ).then(response.allow ? succeeded : warned);
 
   const codexPlan = finishedCodexPlan(session, items, running);
+  const question = questionAwaitingAnswer(items);
+  const picks = picksFor(picked, question?.id);
 
   const trackScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) =>
     setScrolledBack(event.nativeEvent.contentOffset.y > windowHeight);
@@ -249,10 +258,27 @@ export function Chat({
       ) : (
         <Loading style={styles.fill} />
       )}
+      {question?.questions ? (
+        <QuestionPanel
+          key={question.id}
+          questions={question.questions}
+          picks={picks}
+          onPick={(questionText, labels) =>
+            setPicked((current) =>
+              withPick(current, question.id, questionText, labels),
+            )
+          }
+          onRespond={(response) => respond(question.id, response)}
+        />
+      ) : null}
       <Composer
         state={state}
         session={session}
         reviewingPlan={Boolean(codexPlan) || planAwaitingReview(items)}
+        answers={question ? picks : undefined}
+        sendReady={Boolean(
+          question?.questions && answerQuestions(question.questions, picks),
+        )}
         onSend={startSending}
         onSendFailed={() => setPending(null)}
       />
