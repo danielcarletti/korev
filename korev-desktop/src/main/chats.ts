@@ -224,6 +224,11 @@ interface ActiveTurn {
   startedAt: string;
 }
 
+export interface TurnOutcome {
+  reply: string;
+  stopped: boolean;
+}
+
 export interface TurnPrLinks {
   sessionId: string;
   startedAt: string;
@@ -247,6 +252,16 @@ function turnResult(items: ChatItem[], turn: ActiveTurn): ResultItem | null {
     (item) => item.kind === 'result' && item.id.startsWith(`${turn.id}:`),
   );
   return result?.kind === 'result' ? result : null;
+}
+
+function turnReply(items: ChatItem[], turn: ActiveTurn): string {
+  return items
+    .flatMap((item) =>
+      item.kind === 'assistant' && item.id.startsWith(`${turn.id}:`)
+        ? [item.text]
+        : [],
+    )
+    .join('\n\n');
 }
 
 function scopedToTurn(item: ChatItem, turnId: string): ChatItem {
@@ -311,6 +326,7 @@ function isFailedSigning(item: ChatItem): boolean {
 export function createChats(
   ctx: Context,
   onWorkspaceTurnFinished: (workspaceId: string, links: TurnPrLinks) => void,
+  onSessionTurnFinished: (session: ChatSession, outcome: TurnOutcome) => void,
 ): Chats {
   const transcripts = new Map<string, ChatItem[]>();
   // Conversation text of transcripts not loaded in `transcripts`, so search
@@ -448,6 +464,10 @@ export function createChats(
     touch(owner);
     if (owner.kind === 'workspace')
       finishWorkspaceTurn(owner.workspace, session, items, turn);
+    onSessionTurnFinished(session, {
+      reply: turnReply(items, turn),
+      stopped: turn.stopRequested,
+    });
     ctx.store.save();
     ctx.emitState();
   }
@@ -461,10 +481,13 @@ export function createChats(
     );
   }
 
-  async function readableAttachments(): Promise<string> {
-    const dir = attachmentsDir(ctx.deps.userDataPath);
-    await mkdir(dir, { recursive: true });
-    return dir;
+  async function readableDirs(): Promise<string[]> {
+    const dirs = [
+      attachmentsDir(ctx.deps.userDataPath),
+      ctx.store.explainersDir,
+    ];
+    await Promise.all(dirs.map((dir) => mkdir(dir, { recursive: true })));
+    return dirs;
   }
 
   async function noRepoAskTarget(root: string): Promise<TurnTarget> {
@@ -475,7 +498,7 @@ export function createChats(
       env: ctx.deps.env,
       systemPrompt: NO_REPO_ASK_PROMPT,
       readOnly: true,
-      addDirs: [await readableAttachments()],
+      addDirs: await readableDirs(),
       korevCli: false,
     };
   }
@@ -494,7 +517,7 @@ export function createChats(
       env: ctx.deps.env,
       systemPrompt: askSystemPrompt(repos, checkouts),
       readOnly: true,
-      addDirs: [...checkouts.slice(1), await readableAttachments()],
+      addDirs: [...checkouts.slice(1), ...(await readableDirs())],
       korevCli: false,
     };
   }
@@ -538,7 +561,7 @@ export function createChats(
       addDirs: [
         ...linkedPaths,
         ...gitDirsPerCheckout.flat(),
-        await readableAttachments(),
+        ...(await readableDirs()),
       ],
     };
   }
@@ -654,6 +677,7 @@ export function createChats(
         model: options.model,
         planMode: options.planMode && !target.readOnly,
         readOnly: target.readOnly,
+        noShell: Boolean(session.explainer),
         effort: options.effort,
         fast: options.fast,
         toolApprovals: ctx.store.state.settings.toolApprovals,
@@ -871,7 +895,8 @@ export function createChats(
     if (checkpoint) upsert(sessionId, items, { ...message, checkpoint });
     touch(owner);
     if (workspace) workspace.awaitsLane = false;
-    if (isUntitled(session)) session.title = titleFrom(options.text);
+    const untitled = isUntitled(session);
+    if (untitled) session.title = titleFrom(options.text);
     switchAgent(session, options.agent);
     session.model = options.model;
     session.effort = options.effort;
@@ -881,7 +906,7 @@ export function createChats(
     if (workspace && firstMessage && session === workspace.sessions[0]) {
       ctx.background(autoRenameBranch(workspace, options.text));
     }
-    if (firstMessage && namesWithHaiku(owner)) {
+    if (firstMessage && untitled && namesWithHaiku(owner)) {
       void autoTitle(session, options.text);
     }
     return { ok: true, value: undefined };
@@ -1125,7 +1150,7 @@ export function createChats(
       stop(sessionId);
       transcripts.delete(sessionId);
       searchTexts.delete(sessionId);
-      await ctx.store.removeTranscript(sessionId);
+      await ctx.store.removeSession(sessionId);
     },
   };
 }

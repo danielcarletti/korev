@@ -14,6 +14,8 @@ export type DiffLayout = 'unified' | 'split';
 
 export type PaletteMode = false | 'all' | 'files';
 
+export type PrPickerPurpose = 'explain' | 'review';
+
 export const GIT_PANEL_TABS = ['files', 'changes', 'pr', 'artifacts'] as const;
 
 export type GitPanelTab = (typeof GIT_PANEL_TABS)[number];
@@ -23,7 +25,12 @@ export type QuitPrompt = 'closed' | 'asking' | 'waiting';
 export type Page =
   | { kind: 'workspace' }
   | { kind: 'new-workspace'; repoId: string | null }
-  | { kind: 'ask'; askChatId: string | null; repoIds: string[] }
+  | {
+      kind: 'ask';
+      askChatId: string | null;
+      repoIds: string[];
+      prefill?: string;
+    }
   | { kind: 'settings'; section: string }
   | { kind: 'grid' }
   | { kind: 'runs' }
@@ -78,6 +85,14 @@ export function tabKey(tab: MainTab): string {
   return tab.range ? `diff:${tab.range.to}` : 'diff';
 }
 
+export type ExplainerMode = 'explainer' | 'chat';
+
+export interface ExplainerUi {
+  mode: ExplainerMode;
+  step: number;
+  understood: number[];
+}
+
 export interface UiState {
   page: Page;
   workspaceId: string | null;
@@ -91,6 +106,8 @@ export interface UiState {
   historyOpen: boolean;
   askOpen: boolean;
   workspaces: Record<string, WorkspaceUi>;
+  explainers: Record<string, ExplainerUi>;
+  prPicker: PrPickerPurpose | null;
   grid: GridUi;
   palette: PaletteMode;
   diffLayout: DiffLayout;
@@ -113,6 +130,8 @@ const INITIAL: UiState = {
   historyOpen: false,
   askOpen: true,
   workspaces: {},
+  explainers: {},
+  prPicker: null,
   grid: {
     layout: '2x2',
     panes: Array<GridPane | null>(GRID_PANES).fill(null),
@@ -131,6 +150,12 @@ export const EMPTY_WORKSPACE_UI: WorkspaceUi = {
   comments: [],
 };
 
+export const EMPTY_EXPLAINER_UI: ExplainerUi = {
+  mode: 'explainer',
+  step: 0,
+  understood: [],
+};
+
 function knownGitTab(tab: string | undefined): GitPanelTab {
   return GIT_PANEL_TABS.find((known) => known === tab) ?? INITIAL.gitTab;
 }
@@ -145,6 +170,7 @@ function load(): UiState {
       ...saved,
       gitTab: knownGitTab(saved?.gitTab),
       palette: false,
+      prPicker: null,
       updateOpen: false,
       quit: 'closed',
     };
@@ -179,6 +205,21 @@ export function updateWorkspaceUi(
       workspaces: {
         ...current.workspaces,
         [workspaceId]: { ...existing, ...update(existing) },
+      },
+    };
+  });
+}
+
+export function updateExplainerUi(
+  sessionId: string,
+  update: (current: ExplainerUi) => Partial<ExplainerUi>,
+) {
+  setUi((current) => {
+    const existing = current.explainers[sessionId] ?? EMPTY_EXPLAINER_UI;
+    return {
+      explainers: {
+        ...current.explainers,
+        [sessionId]: { ...existing, ...update(existing) },
       },
     };
   });

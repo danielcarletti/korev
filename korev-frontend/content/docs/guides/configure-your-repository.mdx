@@ -78,6 +78,18 @@ file_include_globs = ".env*\nconfig/*.local.json"
 
 Or put the patterns in a `.worktreeinclude` file in the repository root. Korev uses the first list it finds: `.worktreeinclude`, then `file_include_globs`, then **Files to copy** in the app. Korev copies only files that git ignores.
 
+## Reuse worktrees
+
+Each new workspace gets a new worktree, so its setup script installs everything again. In a large repository that takes minutes. A worktree pool keeps a few worktrees and reuses them:
+
+```toml
+worktree_pool_size = 4
+```
+
+Or set **Settings → Repositories → your repo → Worktree pool**. A new workspace takes a free worktree from the pool, switches it to a new branch from the latest base branch, and removes the files git does not ignore. Gitignored files, such as `node_modules` or a virtualenv, stay, so setup has little to do. Korev skips a free worktree that has uncommitted changes. When every worktree in the pool is in use and the pool is full, the workspace gets its own worktree, as without a pool.
+
+Archiving a workspace from the pool keeps its worktree and frees it for the next workspace. Its uncommitted work is saved, and **Restore** brings it back in a free worktree.
+
 ## Environment variables
 
 Add variables for scripts, terminals and agents:

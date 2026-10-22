@@ -1,4 +1,4 @@
-import { appendFile, copyFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Checkpoint,
@@ -18,12 +18,22 @@ const SNAPSHOT_MESSAGE = 'korev checkpoint';
 const CHECKPOINT_REF_PREFIX = 'refs/korev/checkpoints/';
 const WORKTREE_LINE = 'worktree ';
 const BRANCH_LINE = 'branch refs/heads/';
+const MAX_ERROR_LINES = 10;
 const GITHUB_REMOTE =
   /^(?:(?:https?|ssh|git):\/\/)?(?:[^@/]+@)?github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/;
 
+function lastLines(output: string): string {
+  return output
+    .split(/[\r\n]+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-MAX_ERROR_LINES)
+    .join('\n');
+}
+
 export class GitError extends Error {
   constructor(args: readonly string[], stderr: string) {
-    super(stderr.trim() || `git ${args.join(' ')} failed`);
+    super(lastLines(stderr) || `git ${args.join(' ')} failed`);
     this.name = 'GitError';
   }
 }
@@ -185,7 +195,7 @@ async function createWorktree(
   args: string[],
 ): Promise<void> {
   await mkdir(path.dirname(worktree), { recursive: true });
-  await git.run(repo, ['worktree', 'add', ...args]);
+  await git.run(repo, ['worktree', 'add', '--quiet', ...args]);
   await prepareWorktree(git, worktree);
 }
 
@@ -227,6 +237,45 @@ export function addDetachedWorktree(
   return createWorktree(git, repo, worktree, ['--detach', worktree, from]);
 }
 
+async function switchWorktree(git: Git, worktree: string, args: string[]) {
+  // The last workspace's artifacts must not show up in the next one.
+  await rm(path.join(worktree, CONTEXT_DIR), { recursive: true, force: true });
+  await git.run(worktree, ['switch', '--quiet', ...args]);
+  await prepareWorktree(git, worktree);
+}
+
+export function switchToNewBranch(
+  git: Git,
+  worktree: string,
+  branch: string,
+  from: string,
+): Promise<void> {
+  return switchWorktree(git, worktree, ['--no-track', '-c', branch, from]);
+}
+
+export function switchToBranch(
+  git: Git,
+  worktree: string,
+  branch: string,
+): Promise<void> {
+  return switchWorktree(git, worktree, [branch]);
+}
+
+// No -x: gitignored caches such as node_modules are what make a reused worktree fast.
+export async function cleanWorktree(git: Git, worktree: string) {
+  await git.run(worktree, ['clean', '-fd']);
+}
+
+export async function detachWorktree(git: Git, worktree: string) {
+  await git.tryRun(worktree, ['switch', '--detach']);
+  await git.tryRun(worktree, ['reset', '--hard']);
+  await git.tryRun(worktree, ['clean', '-fd']);
+}
+
+export async function isClean(git: Git, worktree: string): Promise<boolean> {
+  return (await git.tryRun(worktree, ['status', '--porcelain'])) === '';
+}
+
 export async function checkoutDetached(
   git: Git,
   worktree: string,
@@ -261,7 +310,7 @@ export async function restoreWorktree(
   branch: string,
 ): Promise<void> {
   await git.tryRun(repo, ['worktree', 'prune']);
-  await git.run(repo, ['worktree', 'add', worktree, branch]);
+  await git.run(repo, ['worktree', 'add', '--quiet', worktree, branch]);
   await prepareWorktree(git, worktree);
 }
 
@@ -407,6 +456,24 @@ export async function fileDiff(
   ]);
   if (!untracked?.trim()) return '';
   return git.stdout(worktree, ['diff', '--no-index', '/dev/null', file]);
+}
+
+export async function branchPatch(
+  git: Git,
+  worktree: string,
+  base: string,
+): Promise<string> {
+  const from = await mergeBase(git, worktree, base);
+  const [tracked, untracked] = await Promise.all([
+    git.run(worktree, ['diff', '-M', from]),
+    untrackedFiles(git, worktree),
+  ]);
+  const added = await Promise.all(
+    untracked.map((file) =>
+      git.stdout(worktree, ['diff', '--no-index', '/dev/null', file]),
+    ),
+  );
+  return [tracked, ...added].join('');
 }
 
 export async function listFiles(git: Git, worktree: string): Promise<string[]> {

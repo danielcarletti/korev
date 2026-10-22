@@ -6,7 +6,14 @@ import {
 } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -65,7 +72,7 @@ async function pickRepositories(window: Page, names: string[]) {
     await window.getByRole('checkbox', { name }).check();
 }
 
-function launchApp(home: string) {
+function launchApp(home: string, env: NodeJS.ProcessEnv = {}) {
   return electron.launch({
     args: [
       APP_ENTRY,
@@ -77,12 +84,13 @@ function launchApp(home: string) {
       HOME: home,
       SHELL: '/bin/sh',
       PATH: `${FAKE_AGENT_BIN}:${process.env.PATH}`,
+      ...env,
     },
   });
 }
 
-async function launch(home: string, repo: string) {
-  const app = await launchApp(home);
+async function launch(home: string, repo: string, env: NodeJS.ProcessEnv = {}) {
+  const app = await launchApp(home, env);
   await app.evaluate(({ dialog }, repoPath) => {
     dialog.showOpenDialog = (async () => ({
       canceled: false,
@@ -294,6 +302,7 @@ test('asks a question about a repository without creating a workspace', async ()
     const sidebar = window.getByRole('navigation', { name: 'Workspaces' });
     await sidebar.getByRole('button', { name: 'Ask', exact: true }).click();
     await expect(window.getByRole('heading', { name: 'Ask' })).toBeVisible();
+    await pickRepositories(window, ['acme-web']);
     await window
       .getByRole('textbox', { name: 'Message' })
       .fill('Where is the README?');
@@ -308,6 +317,18 @@ test('asks a question about a repository without creating a workspace', async ()
       sidebar.getByRole('button', { name: /^Workspace / }),
     ).toHaveCount(0);
     await snap(window, '06-ask-answer');
+
+    const shared = path.join(home, 'chat.html');
+    await app.evaluate(({ session }, savePath) => {
+      session.defaultSession.once('will-download', (_event, item) =>
+        item.setSavePath(savePath),
+      );
+    }, shared);
+    await window.getByRole('button', { name: 'Share chat' }).click();
+    await expect.poll(() => existsSync(shared)).toBe(true);
+    await expect
+      .poll(async () => readFile(shared, 'utf8'))
+      .toContain('Where is the README?');
 
     await window.getByRole('button', { name: 'Start workspace' }).click();
     await expect(
@@ -831,6 +852,163 @@ test('moves a workspace from Working to Done on the board', async () => {
     await expect(
       window.getByRole('main').getByText('I added agent-note.txt.'),
     ).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('explains the changes of a workspace step by step', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'korev-e2e-'));
+  const repo = await createRepo(home);
+  const { app, window } = await launch(home, repo);
+  try {
+    await window.getByRole('button', { name: 'Open project' }).click();
+    await window.getByRole('textbox', { name: 'Message' }).fill('Add a note');
+    await window.getByRole('textbox', { name: 'Message' }).press('Enter');
+    await expect(window.getByText('I added agent-note.txt.')).toBeVisible();
+    await waitForAgentsToFinish(window);
+
+    const panel = window.getByRole('complementary', {
+      name: 'Workspace panel',
+    });
+    await panel.getByRole('button', { name: 'Explain', exact: true }).click();
+    const main = window.getByRole('main');
+    await expect(
+      main.getByText('The README now says how to install the app.'),
+    ).toBeVisible();
+    await expect(
+      main.getByRole('article', { name: 'Step 1: Add the install steps' }),
+    ).toBeVisible();
+    await expect(main.getByText('Not explained')).toBeVisible();
+    await snap(window, '14-explainer');
+    await main
+      .getByRole('region', { name: 'Look closely' })
+      .scrollIntoViewIfNeeded();
+    await snap(window, '14b-explainer-walkthrough');
+
+    await main.getByRole('button', { name: 'Got it, next step' }).click();
+    await expect(main.getByText('1 of 2 understood')).toBeVisible();
+    await main.getByRole('button', { name: 'Ask about this step' }).click();
+    await expect(window.getByRole('textbox', { name: 'Message' })).toHaveValue(
+      'About step 2, "Mention the CLI": ',
+    );
+
+    await main.getByRole('tab', { name: 'Chat' }).click();
+    await main.getByRole('button', { name: /Explanation ready/ }).click();
+    await expect(
+      main.getByRole('article', { name: 'Step 2: Mention the CLI' }),
+    ).toBeVisible();
+    await waitForAgentsToFinish(window);
+  } finally {
+    await app.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+const FAKE_GH = `#!/bin/sh
+case "$1 $2" in
+  "pr list")
+    case "$*" in
+      *review-requested*) echo '[{"number":42,"title":"Add install steps","headRefName":"octo/install","baseRefName":"main","author":{"login":"octo"},"isDraft":false}]' ;;
+      *) echo '[]' ;;
+    esac ;;
+  "pr view") echo '{"number":42,"url":"https://github.com/acme/web/pull/42","title":"Add install steps","author":{"login":"octo"},"headRefOid":"abc123","body":"Adds the steps."}' ;;
+  "pr diff") printf 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n # acme\n+Install it.\n' ;;
+  *) exit 1 ;;
+esac
+`;
+
+async function launchWithFakeGh(home: string) {
+  const repo = await createRepo(home);
+  const fakeBin = path.join(home, 'fake-gh');
+  await mkdir(fakeBin);
+  await writeFile(path.join(fakeBin, 'gh'), FAKE_GH);
+  await chmod(path.join(fakeBin, 'gh'), 0o755);
+  await writeFile(path.join(home, '.shrc'), `export PATH=${fakeBin}:$PATH\n`);
+  return launch(home, repo, { ENV: path.join(home, '.shrc') });
+}
+
+test("explains a teammate's pull request in a read-only Ask chat", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'korev-e2e-'));
+  const { app, window } = await launchWithFakeGh(home);
+  try {
+    await window.getByRole('button', { name: 'Open project' }).click();
+    const sidebar = window.getByRole('navigation', { name: 'Workspaces' });
+    await sidebar.getByRole('button', { name: 'Ask', exact: true }).click();
+    await window
+      .getByRole('button', { name: /^Explain a pull request/ })
+      .click();
+    const picker = window.getByRole('dialog', {
+      name: 'Explain a pull request',
+    });
+    await expect(
+      picker.getByRole('group', { name: 'Waiting for your review' }),
+    ).toBeVisible();
+    await snap(window, '15-explain-picker');
+    await picker.getByRole('option', { name: /#42 Add install steps/ }).click();
+
+    await expect(
+      window.getByText('The README now says how to install the app.'),
+    ).toBeVisible();
+    await expect(
+      sidebar.getByRole('button', { name: 'Ask #42 Add install steps' }),
+    ).toBeVisible();
+    await snap(window, '16-explainer-pr');
+
+    const exported = path.join(home, 'explanation.html');
+    await app.evaluate(({ session }, savePath) => {
+      session.defaultSession.once('will-download', (_event, item) =>
+        item.setSavePath(savePath),
+      );
+    }, exported);
+    await window.getByRole('button', { name: 'Export HTML' }).click();
+    await expect.poll(() => existsSync(exported)).toBe(true);
+    await expect
+      .poll(async () => readFile(exported, 'utf8'))
+      .toContain('The README now says how to install the app.');
+    await waitForAgentsToFinish(window);
+  } finally {
+    await app.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("starts an Ask to review a teammate's pull request", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'korev-e2e-'));
+  const { app, window } = await launchWithFakeGh(home);
+  try {
+    await window.getByRole('button', { name: 'Open project' }).click();
+    const picker = window.getByRole('dialog', {
+      name: 'Review a pull request',
+    });
+    const accelerator = await app.evaluate(({ Menu }) => {
+      const item = Menu.getApplicationMenu()
+        ?.items.flatMap((menu) => menu.submenu?.items ?? [])
+        .find((entry) => entry.label === 'Review Pull Request…');
+      item?.click();
+      return item?.accelerator;
+    });
+    expect(accelerator).toBe('CmdOrCtrl+Shift+R');
+    await expect(picker).toBeVisible();
+    await window.keyboard.press('Escape');
+    await expect(picker).toBeHidden();
+
+    const sidebar = window.getByRole('navigation', { name: 'Workspaces' });
+    await sidebar.getByRole('button', { name: 'Ask', exact: true }).click();
+    await window
+      .getByRole('button', { name: /^Review a pull request/ })
+      .click();
+    await picker.getByRole('option', { name: /#42 Add install steps/ }).click();
+
+    await expect(picker).toBeHidden();
+    const message = window.getByRole('textbox', { name: 'Message' });
+    await expect(message).toBeFocused();
+    await message.pressSequentially('Check the wording.');
+    await expect(message).toHaveValue(
+      'Review pull request #42 Add install steps. Check the wording.',
+    );
+    await snap(window, '17-review-pr');
   } finally {
     await app.close();
     await rm(home, { recursive: true, force: true });

@@ -14,6 +14,7 @@ import type {
 } from '../shared/model';
 import { activeWorkspaces, workspaceLabel } from '../shared/workspaces';
 import { api } from './bridge';
+import { saveDraft } from './chat/Composer';
 import {
   focusedGridPane,
   freeTab,
@@ -32,6 +33,7 @@ import {
   type GridLayout,
   type GridPane,
   type MainTab,
+  type PrPickerPurpose,
   type WorkspacePane,
 } from './ui-store';
 
@@ -40,13 +42,21 @@ export function selectWorkspace(workspaceId: string) {
   void api.focusWorkspaces([workspaceId]);
 }
 
+export const NEW_WORKSPACE_DRAFT_KEY = 'new-workspace';
+
 export function openNewWorkspace(repoId: string | null) {
   setUi({ page: { kind: 'new-workspace', repoId } });
   void api.focusWorkspaces([]);
 }
 
-export function openAsk(askChatId: string | null, repoIds: string[] = []) {
-  setUi({ page: { kind: 'ask', askChatId, repoIds } });
+export const NEW_ASK_DRAFT_KEY = 'new-ask';
+
+export function openAsk(
+  askChatId: string | null,
+  repoIds: string[] = [],
+  prefill?: string,
+) {
+  setUi({ page: { kind: 'ask', askChatId, repoIds, prefill } });
   void api.focusWorkspaces([]);
 }
 
@@ -244,6 +254,10 @@ export async function archiveWorkspace(state: AppState, workspace: Workspace) {
   else openNewWorkspace(workspace.repoId);
 }
 
+export async function retryWorkspace(workspace: Workspace) {
+  reportFailure(await api.retryWorkspace(workspace.id));
+}
+
 export async function restoreWorkspace(workspace: Workspace) {
   const result = await api.restoreWorkspace(workspace.id);
   if (reportFailure(result)) selectWorkspace(workspace.id);
@@ -276,6 +290,34 @@ export async function resolveConflicts(workspace: Workspace, pr: PrStatus) {
 export async function openPrAsWorkspace(workspace: Workspace, pr: PrStatus) {
   const opened = await api.openPrAsWorkspace(workspace.id, pr.number);
   if (reportFailure(opened)) selectWorkspace(opened.value.id);
+}
+
+export async function explainWorkspace(workspace: Workspace) {
+  const started = await api.startExplainer({
+    kind: 'workspace',
+    workspaceId: workspace.id,
+  });
+  if (!reportFailure(started)) return;
+  if (getUi().page.kind !== 'workspace') selectWorkspace(workspace.id);
+  activateTab(workspace.id, `chat:${started.value.sessionId}`);
+}
+
+export function openPrPicker(purpose: PrPickerPurpose) {
+  setUi({ prPicker: purpose });
+}
+
+export async function explainPullRequest(repoId: string, number: number) {
+  const started = await api.startExplainer({ kind: 'pr', repoId, number });
+  if (!reportFailure(started)) return;
+  setUi({ prPicker: null });
+  openAsk(started.value.askChatId);
+}
+
+export function reviewPullRequest(repoId: string, label: string) {
+  const prefill = `Review pull request ${label}. `;
+  saveDraft(NEW_ASK_DRAFT_KEY, prefill);
+  setUi({ prPicker: null });
+  openAsk(null, [repoId], prefill);
 }
 
 export async function mergePr(workspace: Workspace, pr: PrStatus) {

@@ -252,7 +252,18 @@ function Models({ state }: { state: AppState }) {
           onChange={(agent) => update({ defaultAgent: agent as AgentKind })}
         />
       </Row>
-      <ReviewModel state={state} />
+      <TaskModel
+        state={state}
+        setting="reviewModel"
+        title="Review model"
+        description="Runs the Review button. Same as chats uses the default agent and its model."
+      />
+      <TaskModel
+        state={state}
+        setting="explainModel"
+        title="Explain model"
+        description="Writes explanations of pull requests and changes. Same as chats uses the default agent and its model."
+      />
       <Loadout state={state} />
       <Row
         title="Start chats in plan mode"
@@ -269,15 +280,28 @@ function Models({ state }: { state: AppState }) {
 
 const SAME_AS_CHATS = '';
 
-function ReviewModel({ state }: { state: AppState }) {
-  const { reviewModel, defaultAgent, defaultEffort } = state.settings;
-  const choices = modelChoices(state, reviewModel?.agent ?? defaultAgent);
+type ModelSettingKey = 'reviewModel' | 'explainModel';
+
+function TaskModel({
+  state,
+  setting,
+  title,
+  description,
+}: {
+  state: AppState;
+  setting: ModelSettingKey;
+  title: string;
+  description: string;
+}) {
+  const { defaultAgent, defaultEffort } = state.settings;
+  const current = state.settings[setting];
+  const choices = modelChoices(state, current?.agent ?? defaultAgent);
   const choose = (key: string) => {
     const choice = choices.find(
       (entry) => loadoutKey(entry.agent, entry.id) === key,
     );
     update({
-      reviewModel: choice
+      [setting]: choice
         ? {
             agent: choice.agent,
             model: choice.id,
@@ -287,13 +311,10 @@ function ReviewModel({ state }: { state: AppState }) {
     });
   };
   return (
-    <Row
-      title="Review model"
-      description="Runs the Review button. Same as chats uses the default agent and its model."
-    >
+    <Row title={title} description={description}>
       <div className="flex gap-2">
         <Select
-          ariaLabel="Review model"
+          ariaLabel={title}
           className="w-56"
           options={[
             { value: SAME_AS_CHATS, label: 'Same as chats' },
@@ -303,21 +324,17 @@ function ReviewModel({ state }: { state: AppState }) {
             })),
           ]}
           value={
-            reviewModel
-              ? loadoutKey(reviewModel.agent, reviewModel.model)
-              : SAME_AS_CHATS
+            current ? loadoutKey(current.agent, current.model) : SAME_AS_CHATS
           }
           onChange={choose}
         />
-        {reviewModel ? (
+        {current ? (
           <Select
-            ariaLabel="Review effort"
+            ariaLabel={`${title} effort`}
             className="w-28"
-            options={[...EFFORT_LEVELS[reviewModel.agent]]}
-            value={reviewModel.effort}
-            onChange={(effort) =>
-              update({ reviewModel: { ...reviewModel, effort } })
-            }
+            options={[...EFFORT_LEVELS[current.agent]]}
+            value={current.effort}
+            onChange={(effort) => update({ [setting]: { ...current, effort } })}
           />
         ) : null}
       </div>
@@ -888,6 +905,7 @@ const SHORTCUTS: [string, string][] = [
   ['⌘J', 'Toggle terminal'],
   ['⌘.', 'Zen mode'],
   ['⌘G', 'Toggle grid view'],
+  ['⌘⇧R', 'Review a pull request'],
   ['⌘L', 'Focus chat input'],
   ['⇧Tab', 'Toggle plan mode'],
   ['⌘⇧E', 'Toggle fast mode'],
@@ -1090,6 +1108,32 @@ function RepoPromptSettings({ state, repo }: { state: AppState; repo: Repo }) {
   );
 }
 
+function PoolSizeSetting({ repo }: { repo: Repo }) {
+  const saved = String(repo.worktreePoolSize ?? 0);
+  const [draft, setDraft] = useState(saved);
+  useEffect(() => setDraft(saved), [repo.id, saved]);
+  return (
+    <Input
+      aria-label="Worktree pool size"
+      className="w-20"
+      type="number"
+      min={0}
+      step={1}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        const size = Number(draft);
+        if (draft === saved || !Number.isInteger(size) || size < 0)
+          return setDraft(saved);
+        void api.updateRepo(repo.id, { worktreePoolSize: size });
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
+
 function IncludeFilesSettings({ repo }: { repo: Repo }) {
   const saved = repo.fileIncludeGlobs || DEFAULT_INCLUDE_GLOBS;
   const [globs, setGlobs] = useState(saved);
@@ -1284,6 +1328,12 @@ function RepoSettings({ state, repo }: { state: AppState; repo: Repo }) {
             void api.updateRepo(repo.id, { defaultBranch })
           }
         />
+      </Row>
+      <Row
+        title="Worktree pool"
+        description="How many worktrees to keep and reuse for new workspaces. A reused worktree keeps its gitignored files, such as node_modules, so setup is fast. Archiving a workspace frees its worktree instead of deleting it. 0 creates a new worktree for each workspace. worktree_pool_size in the repository's settings file replaces this number."
+      >
+        <PoolSizeSetting repo={repo} />
       </Row>
       <IncludeFilesSettings repo={repo} />
       <div className="py-4">

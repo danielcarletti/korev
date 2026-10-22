@@ -37,6 +37,7 @@ import type {
   Workspace,
   WorkspaceFolder,
 } from './model';
+import type { Explainer, ExplainerOpened, ExplainerTarget } from './explainer';
 
 export interface KorevApi {
   getState(): Promise<AppState>;
@@ -52,6 +53,7 @@ export interface KorevApi {
       spotlightTesting?: boolean;
       prompts?: RepoPrompts;
       fileIncludeGlobs?: string;
+      worktreePoolSize?: number;
     },
   ): Promise<void>;
   toggleSpotlight(workspaceId: string): Promise<Result>;
@@ -92,6 +94,9 @@ export interface KorevApi {
   repoIcon(repoId: string): Promise<string | null>;
   repoGithubUrl(repoId: string): Promise<string | null>;
   startReview(workspaceId: string): Promise<Result<string>>;
+  startExplainer(target: ExplainerTarget): Promise<Result<ExplainerOpened>>;
+  explainer(sessionId: string): Promise<Explainer | null>;
+  updateExplainer(sessionId: string): Promise<Result>;
   resumeRun(runId: string): Promise<Result>;
   resumeTask(runId: string, taskId: string): Promise<Result>;
   answerQuestion(
@@ -101,6 +106,7 @@ export interface KorevApi {
   ): Promise<Result>;
   resolveGate(runId: string, gateId: string, choice: string): Promise<Result>;
   archiveWorkspace(workspaceId: string): Promise<Result>;
+  retryWorkspace(workspaceId: string): Promise<Result>;
   restoreWorkspace(workspaceId: string): Promise<Result>;
   deleteWorkspace(workspaceId: string): Promise<void>;
   focusWorkspaces(workspaceIds: string[]): Promise<void>;
@@ -221,6 +227,7 @@ export const REMOTE_METHODS = [
   'updateSession',
   'createWorkspaces',
   'archiveWorkspace',
+  'retryWorkspace',
   'listBranches',
   'listPullRequests',
   'listIssues',
@@ -241,6 +248,9 @@ export const REMOTE_METHODS = [
   'repoIcon',
   'repoGithubUrl',
   'createAskChat',
+  'startExplainer',
+  'explainer',
+  'updateExplainer',
   'registerPushToken',
   'unregisterPushToken',
   'deleteAskChat',

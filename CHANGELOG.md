@@ -6,7 +6,54 @@ Korev shows the section of each version in its "What's new" window, and korev.ai
 
 ### New
 
+- **Share a chat.** Press **Share chat** at the right of the tab bar, or in an Ask chat's header, to save the chat as one HTML file. Anyone can open it in a browser. It has your messages, the agent's answers, plans and each tool call, but not tool output or thinking.
+- **Worktree pool.** Set **Worktree pool** in a repository's settings, or `worktree_pool_size` in `.korev/settings.toml`, and new workspaces reuse free worktrees instead of creating one each time. A reused worktree keeps its gitignored files, such as `node_modules`, so setup is fast. Archiving a workspace frees its worktree for the next one.
 - **Search chat history.** The command palette (⌘K) now finds chats by what you and the agent wrote in them, not only by workspace name. Type a PR number such as `#292` to find the chats that mention or link that PR, and the workspace that tracks it.
+
+### Fixed
+
+- A workspace whose git hook, such as `post-checkout`, fails after the checkout now starts: Korev runs the setup script, sends the first message and shows the hook's output as a warning. Before, the workspace showed as failed.
+
+## [0.17.0] - 2026-10-21
+
+Review a teammate's pull request from Ask, and retry a failed workspace in place.
+
+### New
+
+- **Review a pull request.** Press ⌘⇧R, press **Review a pull request** on the Ask page, or choose **Review a pull request…** in the command palette, and pick a teammate's pull request. Korev opens a read-only Ask about it, with the pull request already in the message. Say what to review, or type `/` to run a review skill.
+
+### Fixed
+
+- **Try again** on a workspace that failed to start creates that workspace again in place and sends the task. Before, it archived the workspace and opened the New workspace page, so you had to create it again by hand.
+- A composer that opens with text already in it puts the cursor at the end of that text. Before, what you typed went in front of it.
+
+## [0.16.2] - 2026-10-21
+
+Workspaces start on machines that set a custom CA bundle in the login shell.
+
+### Fixed
+
+- Korev now passes the CA certificate variables from your login shell (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`) to git, its hooks and agents. Before, a hook that installs packages, such as `pnpm install`, could fail with a certificate error, and the workspace showed as failed.
+
+## [0.16.1] - 2026-10-21
+
+A workspace that fails to start shows a short error and a Try again button.
+
+### Fixed
+
+- When Korev cannot create a workspace, it shows only the end of git's output, in a box that scrolls. Before, a long error from git or a repository hook pushed the task and the Archive button off the screen. **Try again** archives the failed workspace and opens a new one with the same task.
+
+## [0.16.0] - 2026-10-20
+
+Get a pull request or a whole stack explained in plain words before you review it.
+
+### New
+
+- **Explain a pull request.** Press **Explain** in the Changes tab, or choose **Explain a pull request…** in the command palette or on the Ask page, to get a walkthrough of a change in plain words. It has a one-sentence summary, before and after, the steps in the order that makes sense with the real code under each one, what to look at closely, questions for the author and the words it uses. A teammate's pull request opens in a read-only Ask chat, so nothing is checked out. Korev lists every changed file the explanation leaves out, and offers **Update** when the change moves on. Switch to **Chat** to ask the agent about it.
+- **Explain model.** **Settings → Default models → Explain model** picks the agent, model and effort for explanations, apart from the review model.
+- **Explain a stack.** When a pull request builds on other open pull requests, Korev explains it together with every pull request below it. **The stack** section says what each pull request adds, and each walkthrough step shows the pull request its code comes from.
+- **Explanations on your phone.** A chat with an explanation opens on it in the phone app too, with an Explanation and Chat switch. Tap **Explain** on the pull request bar of a workspace, or the book icon on the Ask tab to pick a pull request that waits for your review. Tap an underlined word to see what it means.
+- **Share an explanation.** **Export HTML** saves the explanation as one HTML file that opens in any browser, in light or dark, with no scripts. Send it to someone who does not use Korev or attach it to the pull request.
 
 ## [0.15.0] - 2026-10-15
 

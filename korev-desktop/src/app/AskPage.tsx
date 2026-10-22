@@ -1,16 +1,22 @@
 import { useState } from 'react';
-import { Button, cn, Icon, IconButton } from '../design-system';
+import { Button, cn, Icon, IconButton, type IconName } from '../design-system';
 import type { AppState, AskChat } from '../shared/model';
-import { deleteAsk, openAsk, startAsk, startFromAsk } from './actions';
+import {
+  deleteAsk,
+  NEW_ASK_DRAFT_KEY,
+  openAsk,
+  openPrPicker,
+  startAsk,
+  startFromAsk,
+} from './actions';
 import { ChatView } from './chat/ChatView';
 import { Composer } from './chat/Composer';
+import { ShareChatButton } from './chat/exportConversation';
 import { askRepoNames, loadoutChoices, modelChoices } from '../shared/format';
 import { useModelChoice } from './hooks';
 import { DRAG_REGION, NO_DRAG, TRAFFIC_LIGHT_GUTTER } from './layout';
 import { RepoPicker } from './RepoPicker';
 import { useUi } from './ui-store';
-
-const NEW_ASK_DRAFT = 'new-ask';
 
 export function AskForm({
   state,
@@ -23,11 +29,7 @@ export function AskForm({
   autoFocus: boolean;
   onStarted(ask: AskChat): void;
 }) {
-  const [repoIds, setRepoIds] = useState(
-    initialRepoIds.length
-      ? initialRepoIds
-      : state.repos.slice(0, 1).map((repo) => repo.id),
-  );
+  const [repoIds, setRepoIds] = useState(initialRepoIds);
   const { agent, model, effort, setEffort, choose } = useModelChoice(
     state.settings,
   );
@@ -37,7 +39,7 @@ export function AskForm({
     <>
       <RepoPicker state={state} selected={repoIds} onChange={setRepoIds} />
       <Composer
-        draftKey={NEW_ASK_DRAFT}
+        draftKey={NEW_ASK_DRAFT_KEY}
         agent={agent}
         models={modelChoices(state, agent)}
         loadout={loadoutChoices(state, agent)}
@@ -74,6 +76,33 @@ export function AskForm({
   );
 }
 
+function AskShortcut({
+  icon,
+  title,
+  description,
+  onClick,
+}: {
+  icon: IconName;
+  title: string;
+  description: string;
+  onClick(): void;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex cursor-pointer items-center gap-3 rounded-md border border-border-1 bg-transparent px-4 py-3 text-left hover:bg-hover"
+      onClick={onClick}
+    >
+      <Icon name={icon} size={16} className="text-accent-text" />
+      <span className="flex flex-1 flex-col gap-0.5">
+        <span className="text-sm font-medium text-fg-1">{title}</span>
+        <span className="text-xs text-fg-3">{description}</span>
+      </span>
+      <Icon name="chevron-right" size={14} className="text-fg-4" />
+    </button>
+  );
+}
+
 function NewAsk({
   state,
   initialRepoIds,
@@ -105,6 +134,18 @@ function NewAsk({
             initialRepoIds={initialRepoIds}
             autoFocus
             onStarted={(ask) => openAsk(ask.id)}
+          />
+          <AskShortcut
+            icon="book-open-text"
+            title="Explain a pull request"
+            description="Get a plain-words walkthrough of a teammate's pull request before you review it."
+            onClick={() => openPrPicker('explain')}
+          />
+          <AskShortcut
+            icon="git-pull-request"
+            title="Review a pull request"
+            description="Pick a teammate's pull request, then say what to review or run a review skill."
+            onClick={() => openPrPicker('review')}
           />
         </div>
       </div>
@@ -152,6 +193,11 @@ function AskChatView({ state, ask }: { state: AppState; ask: AskChat }) {
             {ask.repoIds.length > 1 ? 'Start workspaces' : 'Start workspace'}
           </Button>
         ) : null}
+        <ShareChatButton
+          session={ask.session}
+          context={{ repo: repoNames, branch: null }}
+          className={NO_DRAG}
+        />
         <IconButton
           icon="trash-2"
           label="Delete chat"

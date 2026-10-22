@@ -10,6 +10,7 @@ import {
   type AgentAvailability,
   type AgentKind,
   type AppState,
+  type AskChat,
   type ChatItem,
   type ChatSession,
   type EditorApp,
@@ -45,6 +46,7 @@ import type { RemoteAccess } from './remote-access';
 import { askScratchPath, askWorktreePath } from './ask-worktrees';
 import { createChats, lanesElsewhereNote, type TurnPrLinks } from './chats';
 import { enableCommitSigning, signingKey } from './commit-signing';
+import { createExplainers } from './explainers';
 import { readConductorRepos, readConductorSettings } from './conductor-import';
 import {
   errorMessage,
@@ -77,7 +79,12 @@ import {
   resolveConflictsPrompt,
   reviewPrompt,
 } from './pull-requests';
-import { expandPort, loadRepoConfig, withPrompt } from './repo-config';
+import {
+  expandPort,
+  loadRepoConfig,
+  poolSize,
+  withPrompt,
+} from './repo-config';
 import { listSkills } from './skills';
 import { listIssues, listPullRequests } from './sources';
 import { rangeFileDiff, rangeFiles, searchFiles } from './git-review';
@@ -98,9 +105,11 @@ import {
   strayWorktrees,
   deleteWorkspace,
   newChatSession,
+  chatSessionOn,
   onScriptExit,
   refreshStats,
   restoreWorkspace,
+  retryCreation,
   scriptEnv,
   startScript,
   switchAgent,
@@ -344,6 +353,7 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       },
     }),
     runningSessions: new Set(),
+    creationRetries: new Map(),
     planLimits: {},
     focusedWorkspaceIds: [],
     runtime(workspaceId) {
@@ -386,13 +396,23 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       return found;
     },
   };
-  const chats = createChats(ctx, (workspaceId, links) => {
-    void trackOpenedPrs(workspaceId, links)
-      .then(() => refreshPrs(workspaceId))
-      .catch(() => null);
-    ctx.background(
-      orchestration.turnFinished(links.sessionId).catch(() => undefined),
-    );
+  const chats = createChats(
+    ctx,
+    (workspaceId, links) => {
+      void trackOpenedPrs(workspaceId, links)
+        .then(() => refreshPrs(workspaceId))
+        .catch(() => null);
+      ctx.background(
+        orchestration.turnFinished(links.sessionId).catch(() => undefined),
+      );
+    },
+    (session, outcome) => explainers.turnFinished(session, outcome),
+  );
+  const explainers = createExplainers(ctx, {
+    send: (sessionId, options) => chats.send(sessionId, options),
+    isRunning: (sessionId) => chats.isRunning(sessionId),
+    findSession,
+    addAskChat,
   });
   const spotlight = createSpotlight(
     git,
@@ -825,6 +845,33 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
     ];
   }
 
+  function addAskChat(repoIds: string[], session: ChatSession): AskChat {
+    for (const repoId of repoIds) ctx.repo(repoId);
+    const createdAt = deps.now().toISOString();
+    const ask = {
+      id: deps.newId(),
+      repoIds,
+      session,
+      createdAt,
+      lastMessageAt: createdAt,
+    };
+    store.state.askChats.push(ask);
+    return ask;
+  }
+
+  function findSession(sessionId: string) {
+    for (const workspace of store.state.workspaces) {
+      const session = workspace.sessions.find(
+        (entry) => entry.id === sessionId,
+      );
+      if (session) return { session, askChatId: null };
+    }
+    const ask = store.state.askChats.find(
+      (entry) => entry.session.id === sessionId,
+    );
+    return ask ? { session: ask.session, askChatId: ask.id } : null;
+  }
+
   async function deleteAskChat(askChatId: string) {
     const ask = store.state.askChats.find((entry) => entry.id === askChatId);
     if (!ask) return;
@@ -994,6 +1041,9 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       if (patch.prompts) repo.prompts = patch.prompts;
       if (patch.fileIncludeGlobs !== undefined)
         repo.fileIncludeGlobs = patch.fileIncludeGlobs.trim();
+      const worktreePoolSize = poolSize(patch.worktreePoolSize);
+      if (worktreePoolSize !== undefined)
+        repo.worktreePoolSize = worktreePoolSize;
       store.save();
       ctx.emitState();
     },
@@ -1164,11 +1214,7 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
     repoGithubUrl: (repoId) => originGithubUrl(git, ctx.repo(repoId).path),
     async startReview(workspaceId) {
       const workspace = workspacePath(workspaceId);
-      const { reviewModel, defaultAgent } = store.state.settings;
-      const session = {
-        ...newChatSession(ctx, reviewModel?.agent ?? defaultAgent),
-        ...reviewModel,
-      };
+      const session = chatSessionOn(ctx, store.state.settings.reviewModel);
       const text = await actionPrompt(
         workspaceId,
         'code_review',
@@ -1186,6 +1232,7 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       return sent.ok ? ok(session.id) : sent;
     },
     archiveWorkspace: (workspaceId) => archive(workspaceId),
+    retryWorkspace: async (workspaceId) => retryCreation(ctx, workspaceId),
     resumeRun: (runId) => orchestration.resumeRun(runId),
     resumeTask: (runId, taskId) => orchestration.resumeTask(runId, taskId),
     answerQuestion: (runId, questionId, answer) =>
@@ -1211,20 +1258,17 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       ctx.emitState();
     },
     async createAskChat(repoIds) {
-      for (const repoId of repoIds) ctx.repo(repoId);
-      const createdAt = deps.now().toISOString();
-      const ask = {
-        id: deps.newId(),
+      const ask = addAskChat(
         repoIds,
-        session: newChatSession(ctx, store.state.settings.defaultAgent),
-        createdAt,
-        lastMessageAt: createdAt,
-      };
-      store.state.askChats.push(ask);
+        newChatSession(ctx, store.state.settings.defaultAgent),
+      );
       store.save();
       ctx.emitState();
       return ask;
     },
+    startExplainer: (target) => explainers.start(target),
+    explainer: (sessionId) => explainers.get(sessionId),
+    updateExplainer: (sessionId) => explainers.update(sessionId),
     deleteAskChat,
     newSession: async (workspaceId, agent) =>
       addSession(ctx.workspace(workspaceId), agent),
@@ -1473,7 +1517,7 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
     },
   };
 
-  void refreshAgents();
+  ctx.background(refreshAgents());
   for (const workspace of activeWorkspaces(ctx))
     ctx.background(refreshStats(ctx, workspace));
   ctx.background(refreshAllPrs());

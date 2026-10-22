@@ -1,10 +1,11 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   presetLaneRepo,
   type AgentKind,
   type ChatSession,
+  type ModelSetting,
   type GitWorktree,
   type LaneRepo,
   type PlanLane,
@@ -18,16 +19,19 @@ import {
 } from '../shared/model';
 import { errorMessage, terminalRef, type Context } from './context';
 import { planBlock } from '../shared/message';
-import { workspaceLabel } from '../shared/workspaces';
+import { workspaceLabel, WORKTREE_FAILED } from '../shared/workspaces';
 import {
   addBranchWorktree,
   addDetachedWorktree,
   addWorktree,
   branchExists,
   changedFiles,
+  cleanWorktree,
   createCheckpoint,
   currentBranch,
   deleteBranch,
+  detachWorktree,
+  isClean,
   listWorktrees,
   prepareWorktree,
   removeCleanWorktree,
@@ -36,6 +40,8 @@ import {
   restoreWorktree,
   slugify,
   startPoint,
+  switchToBranch,
+  switchToNewBranch,
   userSlug,
 } from './git';
 import { askWorktreePath } from './ask-worktrees';
@@ -81,8 +87,7 @@ const NAMING_ARGS = [
   '--system-prompt',
 ];
 const NEW_SOURCE: WorkspaceSource = { kind: 'new', baseBranch: null };
-
-type CheckoutSource = Exclude<WorkspaceSource, { kind: 'new' }>;
+const POOL_DIR = '.pool';
 
 export type SendTask = (
   sessionId: string,
@@ -102,6 +107,17 @@ export function newChatSession(ctx: Context, agent: AgentKind): ChatSession {
     agentSessionId: null,
     forkOnNextTurn: false,
     createdAt: ctx.deps.now().toISOString(),
+  };
+}
+
+export function chatSessionOn(
+  ctx: Context,
+  setting: ModelSetting | null,
+): ChatSession {
+  const { defaultAgent } = ctx.store.state.settings;
+  return {
+    ...newChatSession(ctx, setting?.agent ?? defaultAgent),
+    ...setting,
   };
 }
 
@@ -239,12 +255,83 @@ function workspaceNames(ctx: Context, repoId: string, except?: Workspace) {
   );
 }
 
-function worktreePath(ctx: Context, repo: Repo, name: string) {
+function repoDir(ctx: Context, repo: Repo) {
   return path.join(
     ctx.store.state.settings.workspacesRoot,
     slugify(repo.name) || repo.id,
-    name,
   );
+}
+
+function worktreePath(ctx: Context, repo: Repo, name: string) {
+  return path.join(repoDir(ctx, repo), name);
+}
+
+function isPoolSlot(worktree: string): boolean {
+  return path.basename(path.dirname(worktree)) === POOL_DIR;
+}
+
+const poolClaims = new Map<string, Promise<unknown>>();
+// Archived until restored, but its slot is no longer free.
+const restoring = new Set<string>();
+
+// One claim at a time per repository, so two new workspaces never take the same slot.
+function claimInTurn<T>(repo: Repo, claim: () => Promise<T>): Promise<T> {
+  const next = (poolClaims.get(repo.id) ?? Promise.resolve()).then(claim);
+  poolClaims.set(
+    repo.id,
+    next.catch(() => undefined),
+  );
+  return next;
+}
+
+function nextSlotPath(poolDir: string, taken: Set<string>): string {
+  for (let index = 1; ; index += 1) {
+    const slot = path.join(poolDir, String(index));
+    if (!taken.has(String(index)) && !existsSync(slot)) return slot;
+  }
+}
+
+type SlotClaim = 'free' | 'new' | null;
+
+async function claimSlot(
+  ctx: Context,
+  repo: Repo,
+  workspace: Workspace,
+): Promise<SlotClaim> {
+  const size = (await loadRepoConfig(repo, repo.path)).worktreePoolSize;
+  if (!size) return null;
+  return claimInTurn(repo, async () => {
+    const poolDir = path.join(repoDir(ctx, repo), POOL_DIR);
+    const others = ctx.store.state.workspaces.filter(
+      (ws) => ws !== workspace && (!ws.archivedAt || restoring.has(ws.id)),
+    );
+    const used = new Set(others.map((ws) => realPath(ws.path)));
+    const slots = (await listWorktrees(ctx.git, repo.path).catch(() => []))
+      .map((worktree) => realPath(worktree.path))
+      .filter((worktree) => isInside(poolDir, worktree));
+    for (const slot of slots) {
+      if (used.has(slot) || !(await isClean(ctx.git, slot))) continue;
+      workspace.path = slot;
+      return 'free';
+    }
+    const pending = others.filter(
+      (ws) =>
+        ws.repoId === repo.id &&
+        isPoolSlot(ws.path) &&
+        !slots.includes(realPath(ws.path)),
+    );
+    if (slots.length + pending.length >= size) {
+      console.warn(
+        `The worktree pool of ${repo.name} is full (${size}): ${workspace.name} gets a worktree outside it`,
+      );
+      return null;
+    }
+    workspace.path = nextSlotPath(
+      poolDir,
+      new Set(pending.map((ws) => path.basename(ws.path))),
+    );
+    return 'new';
+  });
 }
 
 async function claimName(
@@ -410,12 +497,20 @@ export function firstPrompt(
     .join('\n\n');
 }
 
-function failCreation(ctx: Context, workspace: Workspace, error: unknown) {
+type Retry = () => Promise<void>;
+
+function failCreation(
+  ctx: Context,
+  workspace: Workspace,
+  error: unknown,
+  retry: Retry,
+) {
   ctx.setStatus(
     workspace.id,
     'failed',
-    `Could not create the worktree: ${errorMessage(error)}`,
+    `${WORKTREE_FAILED}: ${errorMessage(error)}`,
   );
+  ctx.creationRetries.set(workspace.id, retry);
 }
 
 async function copyLocalFiles(ctx: Context, repo: Repo, workspace: Workspace) {
@@ -432,22 +527,67 @@ async function finishWorktree(ctx: Context, repo: Repo, workspace: Workspace) {
   ctx.runtime(workspace.id).pendingPrompt = null;
 }
 
+// A failing hook such as post-checkout fails the git command after the checkout is done.
+async function checkOut(
+  ctx: Context,
+  workspace: Workspace,
+  attempt: () => Promise<void>,
+) {
+  try {
+    await attempt();
+  } catch (error) {
+    if ((await currentBranch(ctx.git, workspace.path)) !== workspace.branch)
+      throw error;
+    await prepareWorktree(ctx.git, workspace.path);
+    ctx.deps.emit('toast', {
+      title: `A git hook failed in ${workspaceLabel(workspace)}: ${errorMessage(error)}`,
+      tone: 'neutral',
+    });
+  }
+}
+
+async function checkOutInPool(
+  ctx: Context,
+  repo: Repo,
+  workspace: Workspace,
+  inFreeSlot: () => Promise<void>,
+  inNewWorktree: () => Promise<void>,
+) {
+  if ((await claimSlot(ctx, repo, workspace)) !== 'free') {
+    await checkOut(ctx, workspace, inNewWorktree);
+    return;
+  }
+  await checkOut(ctx, workspace, inFreeSlot);
+  await cleanWorktree(ctx.git, workspace.path);
+}
+
+function addNewWorktree(
+  ctx: Context,
+  repo: Repo,
+  workspace: Workspace,
+  from: string,
+) {
+  return checkOutInPool(
+    ctx,
+    repo,
+    workspace,
+    () => switchToNewBranch(ctx.git, workspace.path, workspace.branch, from),
+    () =>
+      addWorktree(ctx.git, repo.path, workspace.path, workspace.branch, from),
+  );
+}
+
 async function addWorkspaceWorktree(
   ctx: Context,
   repo: Repo,
   workspace: Workspace,
   from: string,
+  retry: Retry,
 ): Promise<boolean> {
   try {
-    await addWorktree(
-      ctx.git,
-      repo.path,
-      workspace.path,
-      workspace.branch,
-      from,
-    );
+    await addNewWorktree(ctx, repo, workspace, from);
   } catch (error) {
-    failCreation(ctx, workspace, error);
+    failCreation(ctx, workspace, error, retry);
     return false;
   }
   await finishWorktree(ctx, repo, workspace);
@@ -471,6 +611,23 @@ function firstMessage(
   };
 }
 
+async function startWorkspace(
+  ctx: Context,
+  repo: Repo,
+  workspace: Workspace,
+  task: SendOptions | null,
+  plan: string | null,
+  acrossRepos: boolean,
+  send: SendTask,
+) {
+  void startScript(ctx, workspace, 'setup');
+  if (task && !workspace.awaitsLane)
+    await send(
+      workspace.sessions[0].id,
+      firstMessage(task, plan, repo, workspace, acrossRepos),
+    );
+}
+
 async function startCreated(
   ctx: Context,
   repos: Repo[],
@@ -485,12 +642,15 @@ async function startCreated(
   await Promise.all(
     workspaces.map(async (workspace, index) => {
       if (!created[index]) return;
-      void startScript(ctx, workspace, 'setup');
-      if (task && !workspace.awaitsLane)
-        await send(
-          workspace.sessions[0].id,
-          firstMessage(task, plan, repos[index], workspace, repos.length > 1),
-        );
+      await startWorkspace(
+        ctx,
+        repos[index],
+        workspace,
+        task,
+        plan,
+        repos.length > 1,
+        send,
+      );
     }),
   );
 }
@@ -516,6 +676,17 @@ async function prepareNamedWorkspaces(
   plan: string | null,
   send: SendTask,
 ) {
+  const retryAt = (index: number) => () =>
+    retryCreationOf(
+      ctx,
+      repos[index],
+      workspaces[index],
+      NEW_SOURCE,
+      task,
+      plan,
+      repos.length > 1,
+      send,
+    );
   let startPoints: string[];
   try {
     const [name, ...froms] = await Promise.all([
@@ -527,13 +698,21 @@ async function prepareNamedWorkspaces(
     await claimName(ctx, repos, workspaces, name);
     startPoints = froms;
   } catch (error) {
-    for (const workspace of workspaces) failCreation(ctx, workspace, error);
+    workspaces.forEach((workspace, index) =>
+      failCreation(ctx, workspace, error, retryAt(index)),
+    );
     ctx.emitState();
     return;
   }
   const created = await Promise.all(
     workspaces.map((workspace, index) =>
-      addWorkspaceWorktree(ctx, repos[index], workspace, startPoints[index]),
+      addWorkspaceWorktree(
+        ctx,
+        repos[index],
+        workspace,
+        startPoints[index],
+        retryAt(index),
+      ),
     ),
   );
   await startCreated(ctx, repos, workspaces, created, task, plan, send);
@@ -586,11 +765,13 @@ async function checkOutSource(
   ctx: Context,
   repo: Repo,
   workspace: Workspace,
-  source: CheckoutSource,
+  source: WorkspaceSource,
 ) {
   if (source.kind === 'branch') {
     if (await adoptWorktree(ctx, repo, workspace, source.branch)) return;
-    await addBranchWorktree(ctx.git, repo.path, workspace.path, source.branch);
+    await checkOut(ctx, workspace, () =>
+      addBranchWorktree(ctx.git, repo.path, workspace.path, source.branch),
+    );
     return;
   }
   if (source.kind === 'worktree') {
@@ -608,11 +789,10 @@ async function checkOutSource(
     return;
   }
   await claimName(ctx, [repo], [workspace], workspace.name);
-  await addWorktree(
-    ctx.git,
-    repo.path,
-    workspace.path,
-    workspace.branch,
+  await addNewWorktree(
+    ctx,
+    repo,
+    workspace,
     await startPoint(ctx.git, repo.path, workspace.baseBranch),
   );
 }
@@ -621,19 +801,81 @@ async function prepareSourceWorkspace(
   ctx: Context,
   repo: Repo,
   workspace: Workspace,
-  source: CheckoutSource,
+  source: WorkspaceSource,
   task: SendOptions | null,
+  plan: string | null,
+  acrossRepos: boolean,
   send: SendTask,
 ) {
   try {
     await checkOutSource(ctx, repo, workspace, source);
   } catch (error) {
-    failCreation(ctx, workspace, error);
+    failCreation(ctx, workspace, error, () =>
+      retryCreationOf(
+        ctx,
+        repo,
+        workspace,
+        source,
+        task,
+        plan,
+        acrossRepos,
+        send,
+      ),
+    );
     ctx.emitState();
     return;
   }
   await finishWorktree(ctx, repo, workspace);
-  await startCreated(ctx, [repo], [workspace], [true], task, null, send);
+  ctx.store.save();
+  ctx.emitState();
+  await startWorkspace(ctx, repo, workspace, task, plan, acrossRepos, send);
+}
+
+function ownsWorktreePath(
+  ctx: Context,
+  repo: Repo,
+  workspace: Workspace,
+  source: WorkspaceSource,
+): boolean {
+  return (
+    source.kind !== 'worktree' &&
+    workspace.path === worktreePath(ctx, repo, workspace.name)
+  );
+}
+
+async function retryCreationOf(
+  ctx: Context,
+  repo: Repo,
+  workspace: Workspace,
+  source: WorkspaceSource,
+  task: SendOptions | null,
+  plan: string | null,
+  acrossRepos: boolean,
+  send: SendTask,
+) {
+  if (ownsWorktreePath(ctx, repo, workspace, source))
+    await removeCleanWorktree(ctx.git, repo.path, workspace.path);
+  await prepareSourceWorkspace(
+    ctx,
+    repo,
+    workspace,
+    source,
+    task,
+    plan,
+    acrossRepos,
+    send,
+  );
+}
+
+export function retryCreation(ctx: Context, workspaceId: string): Result {
+  const retry = ctx.creationRetries.get(workspaceId);
+  if (!retry)
+    return { ok: false, message: 'Archive this workspace and create it again' };
+  ctx.creationRetries.delete(workspaceId);
+  ctx.setStatus(workspaceId, 'creating');
+  ctx.emitState();
+  ctx.background(retry());
+  return { ok: true, value: undefined };
 }
 
 function sourceName(source: WorkspaceSource, task: SendOptions | null) {
@@ -734,7 +976,16 @@ export function createWorkspaces(
     );
   } else {
     ctx.background(
-      prepareSourceWorkspace(ctx, repos[0], workspaces[0], source, task, send),
+      prepareSourceWorkspace(
+        ctx,
+        repos[0],
+        workspaces[0],
+        source,
+        task,
+        null,
+        false,
+        send,
+      ),
     );
   }
   return { ok: true, value: workspaces };
@@ -932,7 +1183,10 @@ async function untrackedWorktrees(
     ].map(realPath),
   );
   const worktrees = await listWorktrees(ctx.git, repo.path).catch(() => []);
-  return worktrees.filter((worktree) => !known.has(realPath(worktree.path)));
+  return worktrees.filter(
+    (worktree) =>
+      !known.has(realPath(worktree.path)) && !isPoolSlot(worktree.path),
+  );
 }
 
 export async function strayWorktrees(
@@ -1022,9 +1276,11 @@ export async function archiveWorkspace(
     ctx.git,
     workspace.path,
   ).catch(() => null);
-  await removeWorktree(ctx.git, repo.path, workspace.path);
+  if (isPoolSlot(workspace.path)) await detachWorktree(ctx.git, workspace.path);
+  else await removeWorktree(ctx.git, repo.path, workspace.path);
   if (deleteBranches) await deleteBranch(ctx.git, repo.path, workspace.branch);
   workspace.archivedAt = ctx.deps.now().toISOString();
+  ctx.creationRetries.delete(workspace.id);
   runtime.status = 'idle';
   runtime.unread = false;
   runtime.stats = null;
@@ -1034,14 +1290,37 @@ export async function archiveWorkspace(
   return { ok: true, value: undefined };
 }
 
+async function restoreWorkspaceWorktree(
+  ctx: Context,
+  repo: Repo,
+  workspace: Workspace,
+) {
+  const restore = () =>
+    restoreWorktree(ctx.git, repo.path, workspace.path, workspace.branch);
+  if (!isPoolSlot(workspace.path)) {
+    await checkOut(ctx, workspace, restore);
+    return;
+  }
+  // Another workspace may use the old slot by now.
+  workspace.path = worktreePath(ctx, repo, workspace.name);
+  await checkOutInPool(
+    ctx,
+    repo,
+    workspace,
+    () => switchToBranch(ctx.git, workspace.path, workspace.branch),
+    restore,
+  );
+}
+
 export async function restoreWorkspace(
   ctx: Context,
   workspaceId: string,
 ): Promise<Result> {
   const workspace = ctx.workspace(workspaceId);
   const repo = ctx.repo(workspace.repoId);
+  restoring.add(workspace.id);
   try {
-    await restoreWorktree(ctx.git, repo.path, workspace.path, workspace.branch);
+    await restoreWorkspaceWorktree(ctx, repo, workspace);
     const snapshot = workspace.archiveSnapshot;
     const head = (
       await ctx.git.tryRun(workspace.path, ['rev-parse', 'HEAD'])
@@ -1051,6 +1330,8 @@ export async function restoreWorkspace(
     }
   } catch (error) {
     return { ok: false, message: errorMessage(error) };
+  } finally {
+    restoring.delete(workspace.id);
   }
   workspace.archivedAt = null;
   workspace.restoredAt = ctx.deps.now().toISOString();
@@ -1069,7 +1350,7 @@ export async function deleteWorkspace(ctx: Context, workspaceId: string) {
   if (!workspace.archivedAt) return;
   state.workspaces = state.workspaces.filter((ws) => ws.id !== workspaceId);
   await Promise.all(
-    workspace.sessions.map((session) => ctx.store.removeTranscript(session.id)),
+    workspace.sessions.map((session) => ctx.store.removeSession(session.id)),
   );
   ctx.store.save();
   ctx.emitState();

@@ -73,14 +73,29 @@ let prsByUrl: Record<string, Record<string, unknown>> = {};
 let stacksByUrl: Record<string, Record<string, unknown>> = {};
 let ghMerges: string[][] = [];
 let gitAddGate: Promise<void> | null = null;
+let agentVersionGate: Promise<void> | null = null;
+let agentVersionsWaiting = 0;
 let prViewGate: Promise<void> | null = null;
 let prViewsWaiting = 0;
+let prDiff = '';
+let prsByNumber: Record<string, Record<string, unknown>> = {};
+let diffsByNumber: Record<string, string> = {};
+
+const README_PATCH = `diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1,2 @@
+ # acme
++Install it.
+`;
 
 const BRANCH_PR_URL = 'https://github.com/acme/web/pull/7';
 const NO_PR = { exitCode: 1, stdout: '', stderr: 'no pull requests found' };
 
 function fakePrView(ref: string) {
-  const pr = ref.startsWith('https://') ? prsByUrl[ref] : openPr;
+  const pr = ref.startsWith('https://')
+    ? prsByUrl[ref]
+    : (prsByNumber[ref] ?? openPr);
   return pr ? { exitCode: 0, stdout: JSON.stringify(pr), stderr: '' } : NO_PR;
 }
 
@@ -111,6 +126,19 @@ const runWithFakeSqlite: CommandRunner = async (file, args, options) => {
     }
     return fakePrView(args[2]);
   }
+  if (file === 'gh' && args[0] === 'pr' && args[1] === 'diff')
+    return {
+      exitCode: 0,
+      stdout: diffsByNumber[args[2]] ?? prDiff,
+      stderr: '',
+    };
+  if (file === 'gh' && args[0] === 'pr' && args.includes('--head')) {
+    const head = args[args.indexOf('--head') + 1];
+    const found = Object.values(prsByNumber).filter(
+      (pr) => pr.headRefName === head,
+    );
+    return { exitCode: 0, stdout: JSON.stringify(found), stderr: '' };
+  }
   if (file === 'gh' && args[0] === 'api' && args[1] === 'graphql')
     return fakePrStack(args);
   if (file === 'gh' && isGhMerge(args)) {
@@ -118,6 +146,10 @@ const runWithFakeSqlite: CommandRunner = async (file, args, options) => {
     return { exitCode: 0, stdout: '', stderr: '' };
   }
   if (file === 'git' && args[0] === 'add' && gitAddGate) await gitAddGate;
+  if (args[0] === '--version' && agentVersionGate) {
+    agentVersionsWaiting++;
+    await agentVersionGate;
+  }
   return runProcess(file, args, options);
 };
 
@@ -239,8 +271,13 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     stacksByUrl = {};
     ghMerges = [];
     gitAddGate = null;
+    agentVersionGate = null;
+    agentVersionsWaiting = 0;
     prViewGate = null;
     prViewsWaiting = 0;
+    prDiff = '';
+    prsByNumber = {};
+    diffsByNumber = {};
     await korev.shutdown();
     vi.useRealTimers();
     await rm(home, { recursive: true, force: true });
@@ -424,6 +461,26 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
 
     expect(await Promise.race([shutdown, stillWaiting])).toBe('waiting');
     releasePrView();
+    await shutdown;
+    korev = await openKorev();
+  });
+
+  it('waits for agent detection before it shuts down', async () => {
+    await korev.shutdown();
+    let releaseAgentVersion!: () => void;
+    agentVersionGate = new Promise(
+      (resolve) => (releaseAgentVersion = resolve),
+    );
+    korev = await openKorev();
+
+    await waitFor(async () => agentVersionsWaiting > 0);
+    const shutdown = korev.shutdown().then(() => 'shut down');
+    const stillWaiting = new Promise((resolve) =>
+      setTimeout(() => resolve('waiting'), 100),
+    );
+
+    expect(await Promise.race([shutdown, stillWaiting])).toBe('waiting');
+    releaseAgentVersion();
     await shutdown;
     korev = await openKorev();
   });
@@ -876,6 +933,36 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     ).toMatchObject({ model: 'claude-haiku-4-5', effort: 'low' });
   });
 
+  it('starts explanations on the explain model, not the review model', async () => {
+    await korev.api.updateSettings({
+      reviewModel: {
+        agent: 'claude',
+        model: 'claude-haiku-4-5',
+        effort: 'low',
+      },
+      explainModel: {
+        agent: 'claude',
+        model: 'claude-sonnet-5-5',
+        effort: 'medium',
+      },
+    });
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace.path, 'NOTES.md'), 'draft\n');
+
+    const started = await korev.api.startExplainer({
+      kind: 'workspace',
+      workspaceId: workspace.id,
+    });
+
+    if (!started.ok) throw new Error(started.message);
+    const state = await korev.api.getState();
+    expect(
+      state.workspaces[0].sessions.find(
+        (entry) => entry.id === started.value.sessionId,
+      ),
+    ).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+  });
+
   it('renames the placeholder branch after the first message', async () => {
     await korev.api.updateSettings({ autoRenameBranches: true });
     const workspace = await createWorkspace();
@@ -994,6 +1081,76 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(runtime.message).toMatch(/Could not create the worktree/);
   });
 
+  it('creates a failed workspace again in place and sends its task on retry', async () => {
+    const repo = await addRepo();
+    const settings = (await korev.api.getState()).settings;
+    const blocker = path.join(settings.workspacesRoot, 'acme', 'retry-me');
+    await mkdir(path.join(blocker, 'x'), { recursive: true });
+    const created = await korev.api.createWorkspaces(
+      [repo.id],
+      task('retry me'),
+    );
+    if (!created.ok) throw new Error(created.message);
+    const id = created.value[0].id;
+    expect((await waitUntilCreated(id)).runtime.status).toBe('failed');
+    await rm(blocker, { recursive: true });
+
+    expect(await korev.api.retryWorkspace(id)).toEqual({
+      ok: true,
+      value: undefined,
+    });
+
+    const { workspace, runtime } = await waitUntilCreated(id);
+    expect(runtime.status).not.toBe('failed');
+    expect(workspace.archivedAt).toBeNull();
+    await waitForTurn(workspace.sessions[0].id);
+    const [prompt] = (
+      await korev.api.transcript(workspace.sessions[0].id)
+    ).filter((item) => item.kind === 'user');
+    expect(prompt.kind === 'user' && prompt.text).toBe('retry me');
+  });
+
+  it('keeps a workspace whose post-checkout hook fails, warns with the end of its output, runs setup and sends the task', async () => {
+    const hook = path.join(repoPath, '.git', 'hooks', 'post-checkout');
+    await writeFile(
+      hook,
+      '#!/bin/sh\nfor i in $(seq 200); do echo "installing $i"; done\necho "hook broke"\nexit 1\n',
+      { mode: 0o755 },
+    );
+    const repo = await addRepo();
+    await korev.api.updateRepoScripts(repo.id, {
+      ...repo.scripts,
+      setup: 'npm ci',
+    });
+    spawned.length = 0;
+
+    const workspace = await createWorkspace(task('hooked'));
+
+    const { runtime } = await workspaceState(workspace.id);
+    expect(runtime.status).not.toBe('failed');
+    expect(git(workspace.path, 'branch', '--show-current')).toBe(
+      workspace.branch,
+    );
+    expect(existsSync(path.join(workspace.path, '.context'))).toBe(true);
+    expect(spawned).toContainEqual({
+      args: ['-lc', 'npm ci'],
+      cwd: workspace.path,
+    });
+    const [prompt] = (
+      await korev.api.transcript(workspace.sessions[0].id)
+    ).filter((item) => item.kind === 'user');
+    expect(prompt.kind === 'user' && prompt.text).toBe('hooked');
+    const warning = emit.mock.calls.find(
+      ([event, payload]) =>
+        event === 'toast' &&
+        (payload as { title: string }).title.includes('hook broke'),
+    );
+    expect(warning).toBeDefined();
+    const { title } = warning![1] as { title: string };
+    expect(title).not.toMatch(/installing 1\b/);
+    expect(title.split('\n').length).toBeLessThanOrEqual(10);
+  });
+
   async function askAndWait(repoIds: string[], text: string) {
     const ask = await korev.api.createAskChat(repoIds);
     await sendAndWait(ask.session.id, text);
@@ -1109,6 +1266,156 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     );
 
     expect(existsSync(path.join(askDir, 'approved.txt'))).toBe(true);
+  });
+
+  async function explainerOf(sessionId: string) {
+    const explainer = await korev.api.explainer(sessionId);
+    if (!explainer) throw new Error('no explainer');
+    return explainer;
+  }
+
+  async function waitForExplainer(sessionId: string, status: string) {
+    await waitFor(
+      async () => (await explainerOf(sessionId)).ref.status === status,
+    );
+    return explainerOf(sessionId);
+  }
+
+  it('explains the changes of a workspace and notices when they move on', async () => {
+    const workspace = await createWorkspace();
+    await writeFile(
+      path.join(workspace.path, 'README.md'),
+      '# acme\nInstall it.\n',
+    );
+    git(workspace.path, 'commit', '-qam', 'install steps');
+    await writeFile(path.join(workspace.path, 'NOTES.md'), 'draft\n');
+
+    const started = await korev.api.startExplainer({
+      kind: 'workspace',
+      workspaceId: workspace.id,
+    });
+    if (!started.ok) throw new Error(started.message);
+    const ready = await waitForExplainer(started.value.sessionId, 'ready');
+
+    expect(started.value.askChatId).toBeNull();
+    expect(ready.content?.headline).toBe(
+      'The README now says how to install the app.',
+    );
+    expect(ready.patch).toContain('+Install it.');
+    expect(ready.patch).toContain('+++ b/NOTES.md');
+    expect(ready.latestRevision).toBe(ready.ref.revision);
+
+    await writeFile(
+      path.join(workspace.path, 'README.md'),
+      '# acme\nInstall it now.\n',
+    );
+    expect(
+      (await explainerOf(started.value.sessionId)).latestRevision,
+    ).not.toBe(ready.ref.revision);
+    const updated = await korev.api.updateExplainer(started.value.sessionId);
+    expect(updated.ok).toBe(true);
+    const fresh = await waitForExplainer(started.value.sessionId, 'ready');
+    expect(fresh.patch).toContain('+Install it now.');
+    expect(fresh.latestRevision).toBe(fresh.ref.revision);
+  });
+
+  it('explains a pull request in an Ask chat and reopens it for the same commit', async () => {
+    const repo = await addRepo();
+    openPr = {
+      number: 42,
+      url: 'https://github.com/acme/web/pull/42',
+      title: 'Add install steps',
+      author: { login: 'octo' },
+      headRefOid: 'abc123',
+      body: 'Adds the steps.',
+    };
+    prDiff = README_PATCH;
+
+    const started = await korev.api.startExplainer({
+      kind: 'pr',
+      repoId: repo.id,
+      number: 42,
+    });
+    if (!started.ok) throw new Error(started.message);
+    const ready = await waitForExplainer(started.value.sessionId, 'ready');
+    const again = await korev.api.startExplainer({
+      kind: 'pr',
+      repoId: repo.id,
+      number: 42,
+    });
+
+    const ask = (await korev.api.getState()).askChats.find(
+      (entry) => entry.id === started.value.askChatId,
+    );
+    expect(ask?.session.title).toBe('#42 Add install steps');
+    expect(ready.ref).toMatchObject({ author: 'octo', revision: 'abc123' });
+    expect(again).toEqual(started);
+  });
+
+  it('explains a pull request together with the open ones it builds on', async () => {
+    const repo = await addRepo();
+    prsByNumber = {
+      '41': {
+        number: 41,
+        url: 'https://github.com/acme/web/pull/41',
+        title: 'Add the install section',
+        headRefName: 'octo/install',
+        baseRefName: 'main',
+        headRefOid: 'aaa',
+      },
+      '42': {
+        number: 42,
+        url: 'https://github.com/acme/web/pull/42',
+        title: 'Mention the CLI',
+        headRefName: 'octo/install-cli',
+        baseRefName: 'octo/install',
+        headRefOid: 'bbb',
+      },
+    };
+    diffsByNumber = {
+      '41': README_PATCH,
+      '42': README_PATCH.replace('+Install it.', '+Put the CLI on your PATH.'),
+    };
+
+    const started = await korev.api.startExplainer({
+      kind: 'pr',
+      repoId: repo.id,
+      number: 42,
+    });
+    if (!started.ok) throw new Error(started.message);
+    const ready = await waitForExplainer(started.value.sessionId, 'ready');
+    const [prompt] = (
+      await korev.api.transcript(started.value.sessionId)
+    ).filter((item) => item.kind === 'user');
+
+    expect(ready.ref.stack?.map((layer) => layer.number)).toEqual([41, 42]);
+    expect(ready.ref.revision).toBe('aaa bbb');
+    expect(ready.patch).toMatch(
+      /### Pull request #41[\s\S]*### Pull request #42/,
+    );
+    expect(prompt.kind === 'user' && prompt.text).toContain(
+      'top of a stack of 2 pull requests',
+    );
+  });
+
+  it('asks once for a corrected block, then marks the explanation failed', async () => {
+    const repo = await addRepo();
+    openPr = { number: 9, title: 'broken-explainer', headRefOid: 'def456' };
+    prDiff = README_PATCH;
+
+    const started = await korev.api.startExplainer({
+      kind: 'pr',
+      repoId: repo.id,
+      number: 9,
+    });
+    if (!started.ok) throw new Error(started.message);
+    const failed = await waitForExplainer(started.value.sessionId, 'failed');
+
+    const messages = (
+      await korev.api.transcript(started.value.sessionId)
+    ).filter((item) => item.kind === 'user');
+    expect(messages).toHaveLength(2);
+    expect(failed.ref.error).toContain('no ```korev-explainer block');
   });
 
   it('moves the read-only checkout to the latest default branch before each question', async () => {
@@ -1528,6 +1835,165 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
 
     expect(restored.ok).toBe(true);
     expect(await readFile(path.join(workspace.path, 'draft.txt'), 'utf8')).toBe(
+      'wip\n',
+    );
+  });
+
+  async function usePool(size: number) {
+    const repo = await addRepo();
+    await korev.api.updateRepo(repo.id, { worktreePoolSize: size });
+    return repo;
+  }
+
+  function slot(index: number) {
+    return path.join(
+      home,
+      'korev',
+      'workspaces',
+      'acme',
+      '.pool',
+      String(index),
+    );
+  }
+
+  it('reuses a free pool worktree on a new branch from the latest base, keeping only gitignored files', async () => {
+    await writeFile(path.join(repoPath, '.gitignore'), '.env\ncache/\n');
+    git(repoPath, 'commit', '-q', '-am', 'ignore cache');
+    await usePool(1);
+    const first = await createWorkspace();
+    expect(realpathSync(first.path)).toBe(realpathSync(slot(1)));
+    await writeFile(path.join(first.path, 'README.md'), 'changed\n');
+    await writeFile(path.join(first.path, 'draft.txt'), 'wip\n');
+    await mkdir(path.join(first.path, 'cache'));
+    await writeFile(path.join(first.path, 'cache', 'warm.txt'), 'warm\n');
+    await writeFile(path.join(first.path, '.context', 'notes.md'), 'old\n');
+
+    expect((await korev.api.archiveWorkspace(first.id)).ok).toBe(true);
+
+    expect(existsSync(slot(1))).toBe(true);
+    expect(git(slot(1), 'branch', '--show-current')).toBe('');
+    expect(git(repoPath, 'branch', '--list', first.branch)).toContain(
+      first.branch,
+    );
+    await writeFile(path.join(repoPath, 'NEW.md'), 'new\n');
+    git(repoPath, 'add', 'NEW.md');
+    git(repoPath, 'commit', '-q', '-m', 'new base');
+
+    const second = await createWorkspace();
+
+    expect(realpathSync(second.path)).toBe(realpathSync(slot(1)));
+    expect(second.branch).toBe('dev/workspace-2');
+    expect(git(second.path, 'branch', '--show-current')).toBe(second.branch);
+    expect(git(second.path, 'rev-parse', 'HEAD')).toBe(
+      git(repoPath, 'rev-parse', 'main'),
+    );
+    expect(git(second.path, 'status', '--porcelain')).toBe('');
+    expect(existsSync(path.join(second.path, 'draft.txt'))).toBe(false);
+    expect(
+      await readFile(path.join(second.path, 'cache', 'warm.txt'), 'utf8'),
+    ).toBe('warm\n');
+    expect(existsSync(path.join(second.path, '.context'))).toBe(true);
+    expect(existsSync(path.join(second.path, '.context', 'notes.md'))).toBe(
+      false,
+    );
+  });
+
+  it('deletes the branch of an archived pool workspace and keeps its worktree when set to', async () => {
+    await usePool(1);
+    await korev.api.updateSettings({ deleteBranchOnArchive: true });
+    const workspace = await createWorkspace();
+
+    await korev.api.archiveWorkspace(workspace.id);
+
+    expect(existsSync(slot(1))).toBe(true);
+    expect(git(repoPath, 'branch', '--list', workspace.branch)).toBe('');
+  });
+
+  it('leaves a pool worktree with uncommitted changes alone and adds a new one', async () => {
+    await usePool(2);
+    const first = await createWorkspace();
+    await korev.api.archiveWorkspace(first.id);
+    await writeFile(path.join(slot(1), 'leftover.txt'), 'mine\n');
+
+    const second = await createWorkspace();
+
+    expect(realpathSync(second.path)).toBe(realpathSync(slot(2)));
+    expect(await readFile(path.join(slot(1), 'leftover.txt'), 'utf8')).toBe(
+      'mine\n',
+    );
+  });
+
+  it('grows the pool up to its size, then creates worktrees outside it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await usePool(2);
+
+    const first = await createWorkspace();
+    const second = await createWorkspace();
+    const third = await createWorkspace();
+
+    expect(realpathSync(first.path)).toBe(realpathSync(slot(1)));
+    expect(realpathSync(second.path)).toBe(realpathSync(slot(2)));
+    expect(third.path).toBe(
+      path.join(home, 'korev', 'workspaces', 'acme', third.name),
+    );
+    expect(git(third.path, 'branch', '--show-current')).toBe(third.branch);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('full'));
+    warn.mockRestore();
+  });
+
+  it('gives two workspaces created at once their own pool worktrees', async () => {
+    const repo = await usePool(2);
+
+    const created = await Promise.all([
+      korev.api.createWorkspaces([repo.id], null),
+      korev.api.createWorkspaces([repo.id], null),
+    ]);
+
+    const paths = await Promise.all(
+      created.map(async (result) => {
+        if (!result.ok) throw new Error(result.message);
+        return (await waitUntilCreated(result.value[0].id)).workspace.path;
+      }),
+    );
+    expect(paths.map((entry) => realpathSync(entry)).sort()).toEqual(
+      [realpathSync(slot(1)), realpathSync(slot(2))].sort(),
+    );
+  });
+
+  it('restores an archived pool workspace into a free pool worktree', async () => {
+    await usePool(1);
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace.path, 'draft.txt'), 'wip\n');
+    await korev.api.archiveWorkspace(workspace.id);
+
+    expect((await korev.api.restoreWorkspace(workspace.id)).ok).toBe(true);
+
+    const { workspace: restored } = await workspaceState(workspace.id);
+    expect(realpathSync(restored.path)).toBe(realpathSync(slot(1)));
+    expect(git(restored.path, 'branch', '--show-current')).toBe(
+      workspace.branch,
+    );
+    expect(await readFile(path.join(restored.path, 'draft.txt'), 'utf8')).toBe(
+      'wip\n',
+    );
+  });
+
+  it('restores an archived pool workspace into a new pool worktree when its own is taken', async () => {
+    await usePool(2);
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace.path, 'draft.txt'), 'wip\n');
+    await korev.api.archiveWorkspace(workspace.id);
+    const other = await createWorkspace();
+    expect(realpathSync(other.path)).toBe(realpathSync(slot(1)));
+
+    expect((await korev.api.restoreWorkspace(workspace.id)).ok).toBe(true);
+
+    const { workspace: restored } = await workspaceState(workspace.id);
+    expect(realpathSync(restored.path)).toBe(realpathSync(slot(2)));
+    expect(git(restored.path, 'branch', '--show-current')).toBe(
+      workspace.branch,
+    );
+    expect(await readFile(path.join(restored.path, 'draft.txt'), 'utf8')).toBe(
       'wip\n',
     );
   });
