@@ -9,6 +9,7 @@ import {
   PLAN_TOOL,
   type AskChat,
   type ChatItem,
+  type ChatMatch,
   type ChatSession,
   type Checkpoint,
   type PermissionResponse,
@@ -288,6 +289,29 @@ export interface Chats {
   revert(sessionId: string, itemId: string): Promise<Result<string>>;
   forget(sessionId: string): Promise<void>;
   settled(): Promise<void>;
+  search(query: string): Promise<ChatMatch[]>;
+}
+
+const CHAT_MATCH_LIMIT = 20;
+// The row cuts the snippet off at its end, so keep the match near its start.
+const SNIPPET_CHARS_BEFORE = 20;
+const SNIPPET_CHARS_AFTER = 80;
+const PR_NUMBER_QUERY = /^#(\d+)$/;
+
+// Agents mostly link a PR by its URL, so `#292` also finds `.../pull/292`.
+function searchPattern(query: string): RegExp {
+  const pr = PR_NUMBER_QUERY.exec(query);
+  if (pr) return new RegExp(`(?:#|/pull/)${pr[1]}(?!\\d)`);
+  return new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+}
+
+function matchSnippet(text: string, pattern: RegExp): string | null {
+  const match = pattern.exec(text);
+  if (!match) return null;
+  const start = Math.max(0, match.index - SNIPPET_CHARS_BEFORE);
+  const end = match.index + match[0].length + SNIPPET_CHARS_AFTER;
+  const snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
+  return `${start > 0 ? '…' : ''}${snippet}${end < text.length ? '…' : ''}`;
 }
 
 function isFailedSigning(item: ChatItem): boolean {
@@ -305,6 +329,9 @@ export function createChats(
   onSessionTurnFinished: (session: ChatSession, outcome: TurnOutcome) => void,
 ): Chats {
   const transcripts = new Map<string, ChatItem[]>();
+  // Conversation text of transcripts not loaded in `transcripts`, so search
+  // reads each file once without keeping every tool output in memory.
+  const searchTexts = new Map<string, string>();
   const turns = new Map<string, ActiveTurn>();
   const running = new Set<Promise<void>>();
   const nudgedAboutSigning = new Set<string>();
@@ -1055,6 +1082,45 @@ export function createChats(
     return { ok: true, value: target.text };
   }
 
+  async function searchText(sessionId: string): Promise<string> {
+    const live = transcripts.get(sessionId);
+    if (live) return conversationText(live);
+    const cached = searchTexts.get(sessionId);
+    if (cached !== undefined) return cached;
+    const text = conversationText(await ctx.store.loadTranscript(sessionId));
+    searchTexts.set(sessionId, text);
+    return text;
+  }
+
+  async function search(query: string): Promise<ChatMatch[]> {
+    const needle = query.trim();
+    if (!needle) return [];
+    const pattern = searchPattern(needle);
+    const { workspaces, askChats } = ctx.store.state;
+    const threads = [
+      ...workspaces.flatMap((workspace) =>
+        workspace.sessions.map((session) => ({
+          session,
+          owner: { kind: 'workspace' as const, id: workspace.id },
+        })),
+      ),
+      ...askChats.map((ask) => ({
+        session: ask.session,
+        owner: { kind: 'ask' as const, id: ask.id },
+      })),
+    ].sort((a, b) => b.session.createdAt.localeCompare(a.session.createdAt));
+    const matches = await Promise.all(
+      threads.map(async ({ session, owner }): Promise<ChatMatch | null> => {
+        const text = `${session.title}\n\n${await searchText(session.id)}`;
+        const snippet = matchSnippet(text, pattern);
+        return snippet
+          ? { sessionId: session.id, owner, title: session.title, snippet }
+          : null;
+      }),
+    );
+    return matches.filter((match) => match !== null).slice(0, CHAT_MATCH_LIMIT);
+  }
+
   async function seed(sessionId: string, history: ChatItem[]) {
     const items = await transcript(sessionId);
     for (const item of history) upsert(sessionId, items, item);
@@ -1079,9 +1145,11 @@ export function createChats(
     async settled() {
       while (running.size) await Promise.allSettled(running);
     },
+    search,
     async forget(sessionId) {
       stop(sessionId);
       transcripts.delete(sessionId);
+      searchTexts.delete(sessionId);
       await ctx.store.removeSession(sessionId);
     },
   };

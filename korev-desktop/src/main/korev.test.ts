@@ -992,6 +992,29 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     );
   });
 
+  it('finds a chat by a PR number in its history, also after a restart', async () => {
+    const workspace = await createWorkspace();
+    await sendAndWait(
+      workspace.sessions[0].id,
+      'Fix the build of https://github.com/acme/web/pull/292',
+    );
+    const found = [
+      {
+        sessionId: workspace.sessions[0].id,
+        owner: { kind: 'workspace', id: workspace.id },
+        title: expect.any(String),
+        snippet: expect.stringContaining('acme/web/pull/292'),
+      },
+    ];
+
+    expect(await korev.api.searchChats('#292')).toEqual(found);
+    await korev.shutdown();
+    korev = await openKorev();
+
+    expect(await korev.api.searchChats('WEB/PULL/292')).toEqual(found);
+    expect(await korev.api.searchChats('#29')).toEqual([]);
+  });
+
   it('returns before the worktree exists, then names it from the task and sends the task', async () => {
     await korev.api.updateSettings({ autoRenameBranches: true });
     const repo = await addRepo();

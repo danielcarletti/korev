@@ -1005,6 +1005,13 @@ export interface SearchMatch {
   text: string;
 }
 
+export interface ChatMatch {
+  sessionId: string;
+  owner: { kind: 'workspace' | 'ask'; id: string };
+  title: string;
+  snippet: string;
+}
+
 export interface PrComment {
   id: string;
   author: string;

@@ -4,6 +4,7 @@ import type {
   AskChat,
   AppState,
   ChatItem,
+  ChatMatch,
   ChatSession,
   ChatUpdate,
   EditorId,
@@ -167,6 +168,7 @@ export interface KorevApi {
     query: string,
     options: SearchOptions,
   ): Promise<SearchMatch[]>;
+  searchChats(query: string): Promise<ChatMatch[]>;
   writeFile(
     workspaceId: string,
     path: string,
