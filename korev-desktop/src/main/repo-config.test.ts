@@ -136,6 +136,30 @@ describe('repo config', () => {
     ).toBe('.env*\nconfig/*.local.json');
   });
 
+  it('reads the worktree pool size from the settings file, korev.json or the app', () => {
+    const app = { ...APP, worktreePoolSize: 3 };
+    expect(resolveRepoConfig(APP, NO_FILES).worktreePoolSize).toBe(0);
+    expect(resolveRepoConfig(app, NO_FILES).worktreePoolSize).toBe(3);
+    expect(
+      resolveRepoConfig(app, {
+        ...NO_FILES,
+        sharedToml: 'worktree_pool_size = 5\n',
+      }).worktreePoolSize,
+    ).toBe(5);
+    expect(
+      resolveRepoConfig(app, {
+        ...NO_FILES,
+        sharedToml: 'worktree_pool_size = -1\n',
+      }).worktreePoolSize,
+    ).toBe(3);
+    expect(
+      resolveRepoConfig(app, {
+        ...NO_FILES,
+        jsonConfig: JSON.stringify({ worktreePoolSize: 4 }),
+      }).worktreePoolSize,
+    ).toBe(4);
+  });
+
   it('resolves every named app run script, with the first as the default', () => {
     const app = {
       ...APP,

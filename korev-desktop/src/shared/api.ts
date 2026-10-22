@@ -52,6 +52,7 @@ export interface KorevApi {
       spotlightTesting?: boolean;
       prompts?: RepoPrompts;
       fileIncludeGlobs?: string;
+      worktreePoolSize?: number;
     },
   ): Promise<void>;
   toggleSpotlight(workspaceId: string): Promise<Result>;

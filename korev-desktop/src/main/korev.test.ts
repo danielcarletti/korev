@@ -1087,7 +1087,7 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(prompt.kind === 'user' && prompt.text).toBe('retry me');
   });
 
-  it('reports only the end of a noisy failing post-checkout hook', async () => {
+  it('keeps a workspace whose post-checkout hook fails, warns with the end of its output, runs setup and sends the task', async () => {
     const hook = path.join(repoPath, '.git', 'hooks', 'post-checkout');
     await writeFile(
       hook,
@@ -1095,15 +1095,37 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
       { mode: 0o755 },
     );
     const repo = await addRepo();
+    await korev.api.updateRepoScripts(repo.id, {
+      ...repo.scripts,
+      setup: 'npm ci',
+    });
+    spawned.length = 0;
 
-    const created = await korev.api.createWorkspaces([repo.id], null);
+    const workspace = await createWorkspace(task('hooked'));
 
-    if (!created.ok) throw new Error(created.message);
-    const { runtime } = await waitUntilCreated(created.value[0].id);
-    expect(runtime.status).toBe('failed');
-    expect(runtime.message).toMatch(/hook broke$/);
-    expect(runtime.message).not.toMatch(/installing 1\b/);
-    expect(runtime.message!.split('\n').length).toBeLessThanOrEqual(10);
+    const { runtime } = await workspaceState(workspace.id);
+    expect(runtime.status).not.toBe('failed');
+    expect(git(workspace.path, 'branch', '--show-current')).toBe(
+      workspace.branch,
+    );
+    expect(existsSync(path.join(workspace.path, '.context'))).toBe(true);
+    expect(spawned).toContainEqual({
+      args: ['-lc', 'npm ci'],
+      cwd: workspace.path,
+    });
+    const [prompt] = (
+      await korev.api.transcript(workspace.sessions[0].id)
+    ).filter((item) => item.kind === 'user');
+    expect(prompt.kind === 'user' && prompt.text).toBe('hooked');
+    const warning = emit.mock.calls.find(
+      ([event, payload]) =>
+        event === 'toast' &&
+        (payload as { title: string }).title.includes('hook broke'),
+    );
+    expect(warning).toBeDefined();
+    const { title } = warning![1] as { title: string };
+    expect(title).not.toMatch(/installing 1\b/);
+    expect(title.split('\n').length).toBeLessThanOrEqual(10);
   });
 
   async function askAndWait(repoIds: string[], text: string) {
@@ -1790,6 +1812,165 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
 
     expect(restored.ok).toBe(true);
     expect(await readFile(path.join(workspace.path, 'draft.txt'), 'utf8')).toBe(
+      'wip\n',
+    );
+  });
+
+  async function usePool(size: number) {
+    const repo = await addRepo();
+    await korev.api.updateRepo(repo.id, { worktreePoolSize: size });
+    return repo;
+  }
+
+  function slot(index: number) {
+    return path.join(
+      home,
+      'korev',
+      'workspaces',
+      'acme',
+      '.pool',
+      String(index),
+    );
+  }
+
+  it('reuses a free pool worktree on a new branch from the latest base, keeping only gitignored files', async () => {
+    await writeFile(path.join(repoPath, '.gitignore'), '.env\ncache/\n');
+    git(repoPath, 'commit', '-q', '-am', 'ignore cache');
+    await usePool(1);
+    const first = await createWorkspace();
+    expect(realpathSync(first.path)).toBe(realpathSync(slot(1)));
+    await writeFile(path.join(first.path, 'README.md'), 'changed\n');
+    await writeFile(path.join(first.path, 'draft.txt'), 'wip\n');
+    await mkdir(path.join(first.path, 'cache'));
+    await writeFile(path.join(first.path, 'cache', 'warm.txt'), 'warm\n');
+    await writeFile(path.join(first.path, '.context', 'notes.md'), 'old\n');
+
+    expect((await korev.api.archiveWorkspace(first.id)).ok).toBe(true);
+
+    expect(existsSync(slot(1))).toBe(true);
+    expect(git(slot(1), 'branch', '--show-current')).toBe('');
+    expect(git(repoPath, 'branch', '--list', first.branch)).toContain(
+      first.branch,
+    );
+    await writeFile(path.join(repoPath, 'NEW.md'), 'new\n');
+    git(repoPath, 'add', 'NEW.md');
+    git(repoPath, 'commit', '-q', '-m', 'new base');
+
+    const second = await createWorkspace();
+
+    expect(realpathSync(second.path)).toBe(realpathSync(slot(1)));
+    expect(second.branch).toBe('dev/workspace-2');
+    expect(git(second.path, 'branch', '--show-current')).toBe(second.branch);
+    expect(git(second.path, 'rev-parse', 'HEAD')).toBe(
+      git(repoPath, 'rev-parse', 'main'),
+    );
+    expect(git(second.path, 'status', '--porcelain')).toBe('');
+    expect(existsSync(path.join(second.path, 'draft.txt'))).toBe(false);
+    expect(
+      await readFile(path.join(second.path, 'cache', 'warm.txt'), 'utf8'),
+    ).toBe('warm\n');
+    expect(existsSync(path.join(second.path, '.context'))).toBe(true);
+    expect(existsSync(path.join(second.path, '.context', 'notes.md'))).toBe(
+      false,
+    );
+  });
+
+  it('deletes the branch of an archived pool workspace and keeps its worktree when set to', async () => {
+    await usePool(1);
+    await korev.api.updateSettings({ deleteBranchOnArchive: true });
+    const workspace = await createWorkspace();
+
+    await korev.api.archiveWorkspace(workspace.id);
+
+    expect(existsSync(slot(1))).toBe(true);
+    expect(git(repoPath, 'branch', '--list', workspace.branch)).toBe('');
+  });
+
+  it('leaves a pool worktree with uncommitted changes alone and adds a new one', async () => {
+    await usePool(2);
+    const first = await createWorkspace();
+    await korev.api.archiveWorkspace(first.id);
+    await writeFile(path.join(slot(1), 'leftover.txt'), 'mine\n');
+
+    const second = await createWorkspace();
+
+    expect(realpathSync(second.path)).toBe(realpathSync(slot(2)));
+    expect(await readFile(path.join(slot(1), 'leftover.txt'), 'utf8')).toBe(
+      'mine\n',
+    );
+  });
+
+  it('grows the pool up to its size, then creates worktrees outside it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await usePool(2);
+
+    const first = await createWorkspace();
+    const second = await createWorkspace();
+    const third = await createWorkspace();
+
+    expect(realpathSync(first.path)).toBe(realpathSync(slot(1)));
+    expect(realpathSync(second.path)).toBe(realpathSync(slot(2)));
+    expect(third.path).toBe(
+      path.join(home, 'korev', 'workspaces', 'acme', third.name),
+    );
+    expect(git(third.path, 'branch', '--show-current')).toBe(third.branch);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('full'));
+    warn.mockRestore();
+  });
+
+  it('gives two workspaces created at once their own pool worktrees', async () => {
+    const repo = await usePool(2);
+
+    const created = await Promise.all([
+      korev.api.createWorkspaces([repo.id], null),
+      korev.api.createWorkspaces([repo.id], null),
+    ]);
+
+    const paths = await Promise.all(
+      created.map(async (result) => {
+        if (!result.ok) throw new Error(result.message);
+        return (await waitUntilCreated(result.value[0].id)).workspace.path;
+      }),
+    );
+    expect(paths.map((entry) => realpathSync(entry)).sort()).toEqual(
+      [realpathSync(slot(1)), realpathSync(slot(2))].sort(),
+    );
+  });
+
+  it('restores an archived pool workspace into a free pool worktree', async () => {
+    await usePool(1);
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace.path, 'draft.txt'), 'wip\n');
+    await korev.api.archiveWorkspace(workspace.id);
+
+    expect((await korev.api.restoreWorkspace(workspace.id)).ok).toBe(true);
+
+    const { workspace: restored } = await workspaceState(workspace.id);
+    expect(realpathSync(restored.path)).toBe(realpathSync(slot(1)));
+    expect(git(restored.path, 'branch', '--show-current')).toBe(
+      workspace.branch,
+    );
+    expect(await readFile(path.join(restored.path, 'draft.txt'), 'utf8')).toBe(
+      'wip\n',
+    );
+  });
+
+  it('restores an archived pool workspace into a new pool worktree when its own is taken', async () => {
+    await usePool(2);
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace.path, 'draft.txt'), 'wip\n');
+    await korev.api.archiveWorkspace(workspace.id);
+    const other = await createWorkspace();
+    expect(realpathSync(other.path)).toBe(realpathSync(slot(1)));
+
+    expect((await korev.api.restoreWorkspace(workspace.id)).ok).toBe(true);
+
+    const { workspace: restored } = await workspaceState(workspace.id);
+    expect(realpathSync(restored.path)).toBe(realpathSync(slot(2)));
+    expect(git(restored.path, 'branch', '--show-current')).toBe(
+      workspace.branch,
+    );
+    expect(await readFile(path.join(restored.path, 'draft.txt'), 'utf8')).toBe(
       'wip\n',
     );
   });

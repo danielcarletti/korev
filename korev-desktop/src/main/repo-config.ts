@@ -34,7 +34,7 @@ export type Table = Record<string, unknown>;
 
 export type AppRepoSettings = Pick<
   Repo,
-  'scripts' | 'prompts' | 'fileIncludeGlobs'
+  'scripts' | 'prompts' | 'fileIncludeGlobs' | 'worktreePoolSize'
 >;
 
 export interface RepoConfigFiles {
@@ -57,6 +57,12 @@ export function text(value: unknown): string | undefined {
 
 export function flag(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
+}
+
+export function poolSize(value: unknown): number | undefined {
+  return Number.isInteger(value) && (value as number) >= 0
+    ? (value as number)
+    : undefined;
 }
 
 export function parseTomlSafely(source: string | null): Table | null {
@@ -198,6 +204,8 @@ function fromSettings(
       flag(table(settings.git).delete_branch_on_archive) ?? null,
     branchPrefix: branchPrefixFrom(table(settings.git)),
     spotlightTesting: settings.spotlight_testing === true,
+    worktreePoolSize:
+      poolSize(settings.worktree_pool_size) ?? appWorktreePoolSize(app),
   };
 }
 
@@ -217,6 +225,10 @@ function appFileIncludeGlobs(app: AppRepoSettings): string | null {
   return app.fileIncludeGlobs || null;
 }
 
+function appWorktreePoolSize(app: AppRepoSettings): number {
+  return app.worktreePoolSize ?? 0;
+}
+
 function fromApp(app: AppRepoSettings): RepoConfig {
   const { scripts, prompts } = app;
   return {
@@ -234,6 +246,7 @@ function fromApp(app: AppRepoSettings): RepoConfig {
     deleteBranchOnArchive: null,
     branchPrefix: null,
     spotlightTesting: false,
+    worktreePoolSize: appWorktreePoolSize(app),
   };
 }
 
@@ -255,6 +268,7 @@ function fromJsonConfig(json: string, app: AppRepoSettings): RepoConfig | null {
       scripts.run === undefined ? base.runScripts : runScriptsFrom(scripts.run),
     runMode:
       raw.runScriptMode === 'nonconcurrent' ? 'nonconcurrent' : base.runMode,
+    worktreePoolSize: poolSize(raw.worktreePoolSize) ?? base.worktreePoolSize,
   };
 }
 

@@ -79,7 +79,12 @@ import {
   resolveConflictsPrompt,
   reviewPrompt,
 } from './pull-requests';
-import { expandPort, loadRepoConfig, withPrompt } from './repo-config';
+import {
+  expandPort,
+  loadRepoConfig,
+  poolSize,
+  withPrompt,
+} from './repo-config';
 import { listSkills } from './skills';
 import { listIssues, listPullRequests } from './sources';
 import { rangeFileDiff, rangeFiles, searchFiles } from './git-review';
@@ -1036,6 +1041,9 @@ export async function createKorev(deps: KorevDeps): Promise<Korev> {
       if (patch.prompts) repo.prompts = patch.prompts;
       if (patch.fileIncludeGlobs !== undefined)
         repo.fileIncludeGlobs = patch.fileIncludeGlobs.trim();
+      const worktreePoolSize = poolSize(patch.worktreePoolSize);
+      if (worktreePoolSize !== undefined)
+        repo.worktreePoolSize = worktreePoolSize;
       store.save();
       ctx.emitState();
     },
