@@ -14,7 +14,7 @@ Open it from the sidebar, or with **Ask about &lt;repo&gt;** on a repository row
 
 - It reads a shared checkout of each repository's default branch, at `<workspaces location>/<repo>/.ask`. All Ask chats for a repository use the same checkout.
 - It cannot change files. Claude Code runs without its edit tools. Codex runs in its read-only sandbox.
-- Before it runs a command, Korev asks you. This lets it do things outside the checkout with your approval, like posting a pull request review with `gh`.
+- Before it runs a command, Korev asks you. This lets it do things outside the checkout with your approval, like posting a pull request review with `gh`. To let Ask chats run commands without asking, turn off **Ask before tool calls** and turn on **Ask chats follow the same behavior** in **Settings → Agents**.
 - Plan mode is not available in Ask.
 
 One Ask chat can cover several repositories. Pick them in the repository picker at the top of the chat.

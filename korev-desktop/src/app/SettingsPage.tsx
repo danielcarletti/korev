@@ -81,14 +81,21 @@ function update(patch: Partial<Settings>) {
 function Row({
   title,
   description,
+  nested,
   children,
 }: {
   title: string;
   description?: ReactNode;
+  nested?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-start gap-6 border-b border-border-1 py-4 last:border-b-0">
+    <div
+      className={cn(
+        'flex items-start gap-6 border-b border-border-1 py-4 last:border-b-0',
+        nested && 'pl-6',
+      )}
+    >
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-fg-1">{title}</div>
         {description ? (
@@ -628,6 +635,20 @@ function Agents({ state }: { state: AppState }) {
           onChange={(toolApprovals) => update({ toolApprovals })}
         />
       </Row>
+      {state.settings.toolApprovals ? null : (
+        <Row
+          nested
+          title="Ask chats follow the same behavior"
+          description="Ask chats run commands without asking too. When off, they ask before each command that is not read-only, like posting a PR review with gh."
+        >
+          <Switch
+            checked={state.settings.askFollowsToolApprovals}
+            onChange={(askFollowsToolApprovals) =>
+              update({ askFollowsToolApprovals })
+            }
+          />
+        </Row>
+      )}
       <Row
         title="Let agents coordinate other agents"
         description="Workspace agents get the korev command. With it they can start workers in linked workspaces, message them and get their results back. Run korev help in an agent turn to see every command."

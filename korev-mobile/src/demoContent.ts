@@ -80,6 +80,7 @@ const SETTINGS: Settings = {
   deleteBranchOnArchive: false,
   archiveOnMerge: false,
   toolApprovals: false,
+  askFollowsToolApprovals: false,
   orchestration: true,
   loadout: [],
   snippets: [],

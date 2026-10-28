@@ -634,10 +634,11 @@ export function createChats(
     }
     if (turn.owner.kind === 'workspace' && request.tool === PLAN_TOOL)
       keepPlan(turn.owner.workspace, String(request.input.plan ?? ''));
+    const { toolApprovals, askFollowsToolApprovals } = ctx.store.state.settings;
     if (
       !request.needsUser &&
-      !ctx.store.state.settings.toolApprovals &&
-      turn.owner.kind !== 'ask'
+      !toolApprovals &&
+      (turn.owner.kind !== 'ask' || askFollowsToolApprovals)
     ) {
       answerControl(turn, request, allowResponse(request));
       return;

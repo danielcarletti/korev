@@ -375,6 +375,7 @@ export interface Settings {
   deleteBranchOnArchive: boolean;
   archiveOnMerge: boolean;
   toolApprovals: boolean;
+  askFollowsToolApprovals: boolean;
   orchestration: boolean;
   loadout: string[];
   snippets: Snippet[];

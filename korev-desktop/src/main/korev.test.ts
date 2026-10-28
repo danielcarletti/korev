@@ -1270,6 +1270,31 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(existsSync(path.join(askDir, 'approved.txt'))).toBe(true);
   });
 
+  it('runs an Ask chat command without asking when Ask chats follow tool approvals off', async () => {
+    await korev.api.updateSettings({ askFollowsToolApprovals: true });
+    const repo = await addRepo();
+    const askDir = path.join(home, 'korev', 'workspaces', 'acme', '.ask');
+    const ask = await korev.api.createAskChat([repo.id]);
+    await korev.api.send(ask.session.id, {
+      text: 'needs-approval',
+      agent: 'claude',
+      model: 'claude-sonnet-5-5',
+      effort: 'high',
+      planMode: false,
+      fast: false,
+    });
+    await waitFor(
+      async () => (await korev.api.getState()).runningSessions.length === 0,
+    );
+
+    expect(existsSync(path.join(askDir, 'approved.txt'))).toBe(true);
+    expect(
+      (await korev.api.transcript(ask.session.id)).some(
+        (item) => item.kind === 'permission',
+      ),
+    ).toBe(false);
+  });
+
   async function explainerOf(sessionId: string) {
     const explainer = await korev.api.explainer(sessionId);
     if (!explainer) throw new Error('no explainer');
