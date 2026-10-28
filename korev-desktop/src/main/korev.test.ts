@@ -739,6 +739,7 @@ describe('Korev core', { timeout: TEST_TIMEOUT_MS }, () => {
     ]);
     expect(transcript[3]).toMatchObject({
       kind: 'result',
+      at: expect.any(String),
       turn: {
         files: [
           { path: 'agent-note.txt', status: 'A', additions: 1, deletions: 0 },

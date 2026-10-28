@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dateTime } from '../../shared/format';
 import type { ChatItem } from '../../shared/model';
 import { Transcript } from './Transcript';
 
@@ -44,5 +45,44 @@ describe('Transcript', () => {
 
     expect(screen.getByText('Grep')).toBeTruthy();
     expect(screen.getByText('Bash')).toBeTruthy();
+  });
+
+  it('shows when a message was sent and when its turn finished', () => {
+    const sentAt = '2026-10-28T09:05:00.000Z';
+    const finishedAt = '2026-10-28T09:07:30.000Z';
+    render(
+      <Transcript
+        sessionId="session-1"
+        items={[
+          {
+            id: 'user-1',
+            kind: 'user',
+            text: 'Add a note',
+            at: sentAt,
+            checkpoint: null,
+          },
+          {
+            id: 'result-1',
+            kind: 'result',
+            ok: true,
+            text: '',
+            durationMs: 150_000,
+            costUsd: 0.42,
+            at: finishedAt,
+          },
+        ]}
+        running={false}
+        empty={null}
+        onRevert={vi.fn()}
+        onRespond={vi.fn()}
+        onRetry={vi.fn()}
+        onOpenTurnFile={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(dateTime(sentAt))).toBeTruthy();
+    expect(
+      screen.getByText(`Completed in 2m 30s · $0.42 · ${dateTime(finishedAt)}`),
+    ).toBeTruthy();
   });
 });

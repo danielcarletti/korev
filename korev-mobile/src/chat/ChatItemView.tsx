@@ -13,9 +13,10 @@ import {
   type ViewStyle,
 } from 'react-native';
 import {
-  duration,
+  dateTime,
   fileName,
   imageType,
+  resultSummary,
 } from '../../../korev-desktop/src/shared/format';
 import {
   hasExplainerBlock,
@@ -182,6 +183,7 @@ export function UserMessage({
       {body ? <Text style={styles.text}>{body}</Text> : null}
       <MessageAttachments plans={plans} files={files} sessionId={sessionId} />
       {item.queued ? <Text style={styles.dim}>Queued</Text> : null}
+      <Text style={[styles.dim, styles.sentAt]}>{dateTime(item.at)}</Text>
     </MessageActions>
   );
 }
@@ -327,13 +329,7 @@ function ResultLine({ item }: { item: ItemOf<'result'> }) {
         {item.text || 'The agent stopped with an error.'}
       </Text>
     );
-  const parts = [
-    item.durationMs !== null
-      ? `Completed in ${duration(item.durationMs)}`
-      : 'Completed',
-    item.costUsd !== null ? `$${item.costUsd.toFixed(2)}` : null,
-  ].filter(Boolean);
-  return <Text style={styles.dim}>{parts.join(' · ')}</Text>;
+  return <Text style={styles.dim}>{resultSummary(item)}</Text>;
 }
 
 export function ChatItemView({
@@ -409,6 +405,7 @@ function makeStyles(theme: Theme) {
     explainerChipAction: { color: theme.accentText, fontSize: 14 },
     text: { color: theme.fg1, fontSize: 15, lineHeight: 22 },
     dim: { color: theme.fg3, fontSize: 13, lineHeight: 19 },
+    sentAt: { alignSelf: 'flex-end', fontSize: 11, lineHeight: 15 },
     failed: { color: theme.dangerText, fontSize: 13, lineHeight: 19 },
     code: {
       marginTop: 4,

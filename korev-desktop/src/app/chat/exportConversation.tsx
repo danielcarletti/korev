@@ -1,5 +1,5 @@
 import { IconButton } from '../../design-system';
-import { duration, fileName } from '../../shared/format';
+import { fileName, resultSummary } from '../../shared/format';
 import { messageParts } from '../../shared/message';
 import {
   AGENT_LABELS,
@@ -194,13 +194,7 @@ function TurnResult({ item }: { item: ItemOf<'result'> }) {
         {item.text || 'The agent stopped with an error.'}
       </div>
     );
-  const parts = [
-    item.durationMs !== null
-      ? `Completed in ${duration(item.durationMs)}`
-      : 'Completed',
-    item.costUsd !== null ? `$${item.costUsd.toFixed(2)}` : null,
-  ].filter(Boolean);
-  return <div className="note">{parts.join(' · ')}</div>;
+  return <div className="note">{resultSummary(item)}</div>;
 }
 
 function ConversationItem({ item }: { item: ChatItem }) {
