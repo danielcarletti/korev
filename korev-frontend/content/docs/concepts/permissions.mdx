@@ -14,6 +14,8 @@ description: 'What agents can do without asking you, and what always asks.'
 
 When it is on, Claude Code asks you before each edit and command. The chat shows **Allow &lt;tool&gt;?** with **Allow** and **Deny**. The workspace row shows that it is waiting, and Korev sends a notification.
 
+When it is off, **Ask chats follow the same behavior** shows below it. Turn it on to let Ask chats run commands without asking too. They still cannot edit files.
+
 Codex cannot ask before a tool call. It always runs in its `workspace-write` sandbox, and in its `read-only` sandbox in plan mode.
 
 ## What always asks
@@ -22,4 +24,4 @@ Whatever the setting:
 
 - **Plans.** When Claude Code finishes a plan, you approve it or keep planning. See [Plan mode](./agents-and-modes.mdx#plan-mode).
 - **Questions.** When the agent asks a question, **The agent has a question** shows above the message box. Pick an option, type your own answer in the message box, or both, then send. Your typed answer goes to every question you did not pick an option for. If you picked an option for every question, Korev adds your text to each answer.
-- **Ask chats.** The agent asks before it runs a command. See [Ask](./ask.mdx).
+- **Ask chats.** The agent asks before it runs a command, unless **Ask chats follow the same behavior** is on. See [Ask](./ask.mdx).

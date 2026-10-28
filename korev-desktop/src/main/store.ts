@@ -92,6 +92,7 @@ export function defaultSettings(home: string): Settings {
     deleteBranchOnArchive: false,
     archiveOnMerge: false,
     toolApprovals: false,
+    askFollowsToolApprovals: false,
     orchestration: true,
     loadout: [],
     snippets: [],

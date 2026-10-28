@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CLAUDE_MODELS, type AppState } from '../shared/model';
 import { SettingsPage } from './SettingsPage';
@@ -40,6 +46,7 @@ const STATE = {
     explainModel: null,
     loadout: [],
     toolApprovals: false,
+    askFollowsToolApprovals: false,
     orchestration: true,
   },
 } as unknown as AppState;
@@ -69,6 +76,32 @@ describe('Agents settings', () => {
         },
       },
     ]);
+  });
+
+  it('lets Ask chats follow tool approvals only while approvals are off', () => {
+    const { rerender } = render(
+      <SettingsPage state={STATE} section="agents" />,
+    );
+    const row = screen.getByText('Ask chats follow the same behavior')
+      .parentElement!.parentElement!;
+
+    fireEvent.click(within(row).getByRole('switch'));
+
+    expect(window.korev.call).toHaveBeenCalledWith('updateSettings', [
+      { askFollowsToolApprovals: true },
+    ]);
+
+    rerender(
+      <SettingsPage
+        state={{
+          ...STATE,
+          settings: { ...STATE.settings, toolApprovals: true },
+        }}
+        section="agents"
+      />,
+    );
+
+    expect(screen.queryByText('Ask chats follow the same behavior')).toBeNull();
   });
 
   it('offers no model choices for an agent that is not installed', () => {
