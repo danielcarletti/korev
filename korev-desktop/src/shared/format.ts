@@ -5,6 +5,7 @@ import {
   type AgentKind,
   type AppState,
   type AskChat,
+  type ChatItem,
   type ChatSession,
   type ModelChoice,
   type Repo,
@@ -26,6 +27,31 @@ export function duration(ms: number): string {
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+const DATE_TIME_FORMAT: Intl.DateTimeFormatOptions = {
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+};
+
+export function dateTime(iso: string): string {
+  return new Date(iso).toLocaleString([], DATE_TIME_FORMAT);
+}
+
+export function resultSummary(
+  item: Extract<ChatItem, { kind: 'result' }>,
+): string {
+  return [
+    item.durationMs !== null
+      ? `Completed in ${duration(item.durationMs)}`
+      : 'Completed',
+    item.costUsd !== null ? `$${item.costUsd.toFixed(2)}` : null,
+    item.at ? dateTime(item.at) : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 const THOUSAND = 1_000;

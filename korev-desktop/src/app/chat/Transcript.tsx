@@ -27,7 +27,13 @@ import {
   hasExplainerBlock,
   withoutExplainerBlocks,
 } from '../../shared/explainer';
-import { duration, fileName, imageType } from '../../shared/format';
+import {
+  dateTime,
+  duration,
+  fileName,
+  imageType,
+  resultSummary,
+} from '../../shared/format';
 import {
   messageParts,
   type AgentMessage,
@@ -425,6 +431,7 @@ function UserMessage({
         ))}
         {body ? <Markdown text={body} breaks /> : null}
         <MessageAttachments plans={plans} files={files} sessionId={sessionId} />
+        <span className="self-end text-2xs text-fg-4">{dateTime(item.at)}</span>
       </div>
     </div>
   );
@@ -543,15 +550,9 @@ function ResultLine({
       </div>
     );
   }
-  const parts = [
-    item.durationMs !== null
-      ? `Completed in ${duration(item.durationMs)}`
-      : 'Completed',
-    item.costUsd !== null ? `$${item.costUsd.toFixed(2)}` : null,
-  ].filter(Boolean);
   return (
     <div className="px-1.5 text-xs text-fg-4">
-      {parts.join(' · ')}
+      {resultSummary(item)}
       {item.turn ? (
         <TurnFiles turn={item.turn} onOpen={onOpenTurnFile} />
       ) : null}

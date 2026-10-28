@@ -737,6 +737,7 @@ export type ChatItem =
       text: string;
       durationMs: number | null;
       costUsd: number | null;
+      at?: string;
       turn?: TurnChanges | null;
       context?: ContextUsage | null;
     }

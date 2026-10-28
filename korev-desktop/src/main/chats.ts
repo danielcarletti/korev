@@ -692,8 +692,11 @@ export function createChats(
     if (isUserMessageAck(event)) turn.acknowledged += 1;
     turn.backgroundTasks = backgroundTaskCount(event) ?? turn.backgroundTasks;
     const updates = parser.feed(event);
-    for (const item of updates)
-      upsert(session.id, items, scopedToTurn(item, turn.id));
+    for (const item of updates) {
+      const scoped = scopedToTurn(item, turn.id);
+      if (scoped.kind === 'result') scoped.at = ctx.deps.now().toISOString();
+      upsert(session.id, items, scoped);
+    }
     if (updates.some(isFailedSigning)) nudgeAboutSigning(session, items, turn);
     const allConsumed =
       turn.acknowledged >= turn.written || turn.acknowledged === 0;

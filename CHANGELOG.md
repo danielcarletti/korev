@@ -4,6 +4,10 @@ Korev shows the section of each version in its "What's new" window, and korev.ai
 
 ## [Unreleased]
 
+### New
+
+- **Message times.** Each message you send shows the date and time you sent it, and the line under a finished turn shows when the turn finished. This works on your Mac and on your phone.
+
 ## [0.23.0] - 2026-10-27
 
 See when Korev hears you in hands-free mode, from any app, and Korev now hears its name in more accents.
